@@ -35,10 +35,27 @@ setup-postgres:
 setup-postgres-docker:
         bash scripts/setup_postgres.sh --docker
 
+# Pull latest + install deps + run migrations — one command
+update:
+        bash scripts/update.sh
+
+update-check:
+        bash scripts/update.sh --check
+
+update-cron:
+        bash scripts/update.sh --rebuild-cron
+
+migrate:
+        python3 -m aibp.db.migrate
+
+migrate-status:
+        python3 -m aibp.db.migrate --status
+
 # ─── Database ───────────────────────────────────────────────────────
 
 db-init:
         $(PYTHON) -m aibp.cli db-init
+        $(PYTHON) -m aibp.db.migrate
 
 db-check:
         $(PYTHON) -m aibp.cli smoke-test
@@ -148,6 +165,13 @@ help:
         @echo "  make install          — install Python dependencies only"
         @echo "  make db-init          — initialize databases (after PostgreSQL is set up)"
         @echo "  make smoke-test       — verify all components are reachable"
+        @echo ""
+        @echo "Update (pull new commits from GitHub):"
+        @echo "  make update           — git pull + deps + migrations + smoke test"
+        @echo "  make update-check     — check for updates without applying"
+        @echo "  make update-cron      — update + flag to re-register Hermes cron jobs"
+        @echo "  make migrate          — apply pending DB migrations only"
+        @echo "  make migrate-status   — show applied/pending migrations"
         @echo ""
         @echo "Pipeline:"
         @echo "  make collect-rss      — fetch RSS feeds"

@@ -91,6 +91,10 @@ python3 scripts/bootstrap.py --skip-postgres
 aibp-autopilot/
 ├── src/aibp/                    # основной пакет
 │   ├── db/                      # Layer 0: DB connection + migrations
+│   │   ├── connection.py        #   psycopg2 connection pool
+│   │   ├── init_db.py           #   initial schema (schema.sql)
+│   │   ├── migrate.py           #   migration runner
+│   │   └── migrations/          #   NNNN_*.py migration files
 │   ├── collectors/              # Layer 1: RSS sources
 │   ├── enrichment/              # Layer 2: LLM classification
 │   ├── generation/              # Layer 3: post writing + quality gate
@@ -100,23 +104,54 @@ aibp-autopilot/
 │   ├── utils/                   # shared utilities
 │   └── templates/               # Jinja2 templates (prompts, dashboard)
 ├── prompts/                     # Hermes cron prompts (Markdown)
+│   └── hermes_bootstrap.md      #   ← главный промпт для разворачивания
 ├── presets/ai_business_pulse/   # channel-specific config
 ├── tests/                       # pytest
-├── scripts/                     # CLI helpers
+├── scripts/
+│   ├── bootstrap.py             # ← оркестратор установки (deps + PG + DB)
+│   ├── setup_postgres.sh        # ← авто-установка PostgreSQL
+│   └── update.sh                # ← git pull + deps + migrations
 ├── docker/                      # Dockerfile + compose
 ├── docs/                        # documentation + ADRs
-├── config/                      # default configs
-├── Makefile                     # all common commands
+│   ├── install.md               #   установка
+│   ├── updating.md              #   обновление (после коммитов в GitHub)
+│   └── adr/                     #   Architecture Decision Records
+├── config/                      # default configs (policy.yaml, rss_feeds.yaml, schema.sql)
+├── Makefile                     # all common commands (bootstrap, update, ...)
 └── .env.example                 # template for secrets
 ```
 
 ## Документация
 
 - `docs/install.md` — пошаговая установка через Hermes Agent
-- `docs/architecture.md` — детальная архитектура
+- `docs/updating.md` — **как обновлять проект на сервере после коммитов в GitHub**
 - `docs/adr/` — Architecture Decision Records
-- `docs/operations.md` — рунбук (что делать при сбоях)
-- `docs/self_learning.md` — как работает самообучение
+- `prompts/hermes_bootstrap.md` — промпт для Hermes Agent (полное разворачивание)
+
+## Обновление после коммитов в GitHub
+
+После того как ты запушил изменения в GitHub, на сервере выполни:
+
+```bash
+cd /root/aibp-autopilot
+make update
+```
+
+Это:
+1. `git pull` — подтянет новый код
+2. `pip install` — если изменился `requirements.txt`
+3. `python3 -m aibp.db.migrate` — применит миграции БД
+4. Smoke-test — проверит что всё работает
+
+**Что сохраняется** (не затрагивается `git pull`, в `.gitignore`):
+- `.env` (твои секреты)
+- `data/self_learning.db` (эксперименты)
+- `reports/` (логи, дашборды)
+
+**Что нужно делать вручную:**
+- Если изменилось расписание cron-джоб в `prompts/hermes_bootstrap.md` — попроси Hermes перерегистрировать их
+
+См. `docs/updating.md` для подробностей и примеров.
 
 ## Текущий статус
 
