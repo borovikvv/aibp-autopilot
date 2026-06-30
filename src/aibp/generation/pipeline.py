@@ -1,0 +1,302 @@
+"""Post generation — LLM writes Telegram post, quality gate validates.
+
+Cron: morning (10:00 MSK), evening (18:00 MSK), weekly (Sun 19:00 MSK).
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+import structlog
+from jinja2 import Template
+
+from aibp.db.connection import fetch_all, fetch_one, execute, execute_returning
+from aibp.enrichment.llm_client import OpenRouterClient
+from aibp.generation.quality_gate import validate_post
+from aibp.utils.config import load_policy
+
+log = structlog.get_logger()
+
+MSK = ZoneInfo("Europe/Moscow")
+
+# ═══════════════════════════════════════════════════════════════════
+# Prompt templates (Jinja2)
+# ═══════════════════════════════════════════════════════════════════
+
+POLICY_BLOCK_TEMPLATE = Template("""## Active Policy (auto-managed)
+
+{% if rubric_weights %}
+### Strategy rubric priorities (higher = more likely picked)
+{% for rubric, weight in rubric_weights.items() %}
+- {{ rubric }}: ×{{ weight }}{% endfor %}
+{% endif %}
+
+{% if post_params %}
+### Post parameters for {{ slot }}
+- Target length: {{ post_params[slot].target_chars[0] }}-{{ post_params[slot].target_chars[1] }} chars
+- Paragraphs: {{ post_params[slot].paragraphs[0] }}-{{ post_params[slot].paragraphs[1] }}
+- Max bold: {{ post_params[slot].max_bold }}
+- Max emoji: {{ post_params[slot].max_emoji }}
+- Scheduled hour (MSK): {{ post_params[slot].scheduled_hour_msk }}
+{% endif %}
+
+{% if regex_gates %}
+### Additional editorial gates
+{% for gate in regex_gates %}
+- {{ gate.name }} ({{ gate.action }}): {{ gate.pattern }}{% endfor %}
+{% endif %}
+
+{% if source_scores %}
+### Source scoring adjustments
+{% for domain, score in source_scores.items() %}
+{% if domain != "default" %}- {{ domain }}: {{ score }}{% endif %}{% endfor %}
+{% endif %}
+""")
+
+GENERATION_PROMPT = Template("""You are the editor of @AI_Business_Pulse — a Russian-language Telegram channel about practical AI in business workflows.
+
+The channel formula: NOT "what happened in AI", but "which work task can now be done differently — and where the limit is".
+
+## Your task
+
+Write ONE Russian Telegram post in HTML format for the {{ slot }} slot.
+
+## Source material
+
+TITLE: {{ title }}
+SOURCE: {{ source }} ({{ source_domain }})
+URL: {{ url }}
+PUBLISHED: {{ published_at }}
+EXCERPT: {{ text_excerpt }}
+
+Editorial classification:
+- strategy_rubric: {{ strategy_rubric }}
+- topic_cluster: {{ topic_cluster }}
+- source_fit_score: {{ source_fit_score }}
+- one_sentence_angle: {{ one_sentence_angle }}
+
+{{ policy_block }}
+
+## Hard editorial rules
+
+1. The post is NOT a source recap. The source is only raw material.
+2. One thesis, one practical angle, one line of reasoning.
+3. No source-centered attribution in body ("В материале X", "по данным Y", "как пишет Z").
+4. Source link ONLY at the end: `<a href="{{ url }}">Источник</a>`
+5. No forbidden terms: SMB, CEO, "для бизнеса", "владельцы бизнеса".
+6. No AI clichés: "важно отметить", "в современном мире", "ключевой вывод".
+7. No generic moral endings ("В итоге...", "Итог: ...").
+8. Technical terms (RAG, token budget) allowed only with business translation.
+9. Post must start with a bold headline: `<b>...</b>`, then 3-4 paragraphs.
+10. Length: {{ target_chars_min }}-{{ target_chars_max }} chars, {{ paragraphs_min }}-{{ paragraphs_max }} paragraphs.
+11. End with: `<a href="{{ url }}">Источник</a>` (exact format, nofollow not needed).
+
+## Slot-specific guidance
+
+{% if slot == "morning" %}
+Morning = analytical pillar. Full implementation angle: process, metric, choice, risk.
+{% elif slot == "evening" %}
+Evening = boundary note. One limit, mistake, or distinction. Short and sharp.
+{% elif slot == "weekly_digest" %}
+Weekly digest = synthesis of 4-5 sources around one weekly signal.
+{% endif %}
+
+## Output
+
+Return ONLY the post HTML. No explanation, no markdown fences.
+""")
+
+
+def select_candidate(slot: str, policy: dict) -> dict | None:
+    """Select one best candidate for the slot from enriched items."""
+    # Apply rubric weights from policy
+    rubric_weights = policy.get("rubric_weights", {})
+
+    # Get top candidates
+    candidates = fetch_all(
+        """
+        SELECT id, url, title, text, source, source_domain, source_lang,
+               source_published_at, summary, rank_score, relevance
+        FROM feed_items
+        WHERE status = 'enriched'
+          AND COALESCE(is_used, false) = false
+          AND posted_at IS NULL
+          AND post_draft IS NULL
+          AND source_published_at > now() - interval '14 days'
+          AND summary->'editorial'->>'publish_worthy' = 'true'
+        ORDER BY rank_score DESC NULLS LAST, source_published_at DESC
+        LIMIT 20
+        """
+    )
+
+    if not candidates:
+        log.info("no_candidates", slot=slot)
+        return None
+
+    # Filter by recommended_format matching slot
+    slot_filtered = [
+        c for c in candidates
+        if (c.get("summary") or {}).get("editorial", {}).get("recommended_format") == slot
+        if isinstance(c.get("summary"), dict)
+    ]
+    if not slot_filtered:
+        slot_filtered = candidates
+
+    # Apply rubric weights
+    def weighted_score(c: dict) -> float:
+        editorial = (c.get("summary") or {}).get("editorial", {}) if isinstance(c.get("summary"), dict) else {}
+        rubric = editorial.get("strategy_rubric", "")
+        weight = rubric_weights.get(rubric, 1.0)
+        base = float(c.get("rank_score", 50))
+        return base * weight
+
+    slot_filtered.sort(key=weighted_score, reverse=True)
+    return slot_filtered[0] if slot_filtered else None
+
+
+def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterClient) -> str | None:
+    """Generate post draft via LLM."""
+    summary = candidate.get("summary") or {}
+    if isinstance(summary, str):
+        try:
+            summary = json.loads(summary)
+        except json.JSONDecodeError:
+            summary = {}
+    editorial = summary.get("editorial", {}) if isinstance(summary, dict) else {}
+
+    post_params = policy.get("post_params", {}).get(slot, {})
+    policy_block = POLICY_BLOCK_TEMPLATE.render(
+        rubric_weights=policy.get("rubric_weights", {}),
+        post_params=policy.get("post_params", {}),
+        slot=slot,
+        regex_gates=policy.get("regex_gates", []),
+        source_scores=policy.get("source_scores", {}),
+    )
+
+    prompt = GENERATION_PROMPT.render(
+        slot=slot,
+        title=candidate.get("title", ""),
+        source=candidate.get("source", ""),
+        source_domain=candidate.get("source_domain", ""),
+        url=candidate.get("url", ""),
+        published_at=candidate.get("source_published_at", ""),
+        text_excerpt=(candidate.get("text") or "")[:2000],
+        strategy_rubric=editorial.get("strategy_rubric"),
+        topic_cluster=editorial.get("topic_cluster"),
+        source_fit_score=editorial.get("source_fit_score"),
+        one_sentence_angle=editorial.get("one_sentence_angle"),
+        policy_block=policy_block,
+        target_chars_min=post_params.get("target_chars", [800, 1400])[0],
+        target_chars_max=post_params.get("target_chars", [800, 1400])[1],
+        paragraphs_min=post_params.get("paragraphs", [4, 5])[0],
+        paragraphs_max=post_params.get("paragraphs", [4, 5])[1],
+    )
+
+    try:
+        post = client.chat(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=2000,
+        )
+        return post.strip()
+    except Exception as e:
+        log.error("generation_failed", candidate=candidate["id"], error=str(e))
+        return None
+
+
+def run(slot: str = "morning") -> int:
+    """Main entry point — generate one post for the slot."""
+    policy = load_policy()
+    client = OpenRouterClient()
+
+    candidate = select_candidate(slot, policy)
+    if candidate is None:
+        log.info("no_candidate_available", slot=slot)
+        return 0
+
+    log.info("generating", slot=slot, candidate_id=candidate["id"], title=candidate["title"][:60] if candidate["title"] else "")
+
+    # Generate with retry (max 3 attempts if quality gate fails)
+    for attempt in range(3):
+        post = generate_post(candidate, slot, policy, client)
+        if post is None:
+            return 1
+
+        # Quality gate
+        validation = validate_post(
+            post=post,
+            expected_url=candidate["url"],
+            slot=slot,
+            extra_gates=policy.get("regex_gates", []),
+        )
+
+        if validation["ok"]:
+            log.info("quality_gate_passed", attempt=attempt + 1, slot=slot)
+            break
+        else:
+            log.warning("quality_gate_failed", attempt=attempt + 1, hard_fails=validation["hard_fail_keys"])
+            if attempt == 2:
+                log.error("quality_gate_failed_3_attempts", candidate=candidate["id"])
+                execute(
+                    "UPDATE feed_items SET status = 'rejected' WHERE id = %s",
+                    (candidate["id"],),
+                )
+                return 1
+    else:
+        return 1
+
+    # Calculate scheduled time
+    post_params = policy.get("post_params", {}).get(slot, {})
+    hour_msk = post_params.get("scheduled_hour_msk", 10 if slot == "morning" else 18)
+    now_msk = datetime.now(MSK)
+    scheduled = now_msk.replace(hour=hour_msk, minute=0, second=0, microsecond=0)
+    if scheduled <= now_msk:
+        from datetime import timedelta
+        scheduled += timedelta(hours=1)  # publish in 1h if slot time passed
+
+    # Insert into feed_items as stage_ready (will be picked up by publisher)
+    summary_patch = {
+        "hermes": True,
+        "mode": f"{slot}_generated",
+        "content_slot": slot,
+        "strategy_rubric": (candidate.get("summary") or {}).get("editorial", {}).get("strategy_rubric") if isinstance(candidate.get("summary"), dict) else None,
+        "policy_version": policy.get("version", "unknown"),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    execute(
+        """
+        UPDATE feed_items
+        SET
+            post_draft = %s,
+            status = 'approved',
+            review_status = 'approved',
+            pipeline_env = 'prod',
+            target_channel = 'main',
+            scheduled_at = %s,
+            used_as = %s,
+            campaign_tag = %s,
+            need_image = false,
+            summary = COALESCE(summary, '{}'::jsonb) || %s::jsonb,
+            updated_at = now()
+        WHERE id = %s
+        """,
+        (
+            post,
+            scheduled.astimezone(timezone.utc),
+            f"{slot}_post",
+            slot,
+            json.dumps(summary_patch, ensure_ascii=False),
+            candidate["id"],
+        ),
+    )
+
+    log.info("post_ready", candidate_id=candidate["id"], slot=slot, scheduled=scheduled.isoformat())
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    slot = sys.argv[1] if len(sys.argv) > 1 else "morning"
+    raise SystemExit(run(slot=slot))

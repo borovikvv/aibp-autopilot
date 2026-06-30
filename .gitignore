@@ -1,0 +1,43 @@
+# Secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+
+# Runtime data
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+post_queue.db
+
+# Reports (generated, not source)
+reports/
+!tests/fixtures/reports/
+
+# Temp / scratch files
+tmp/
+temp_*
+tmp_*
+*.tmp
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+
+# Inserted artifacts
+inserted_digest_id.txt

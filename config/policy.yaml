@@ -1,0 +1,88 @@
+# ═══════════════════════════════════════════════════════════════════
+# AIBP Autopilot — Canonical Policy
+# ═══════════════════════════════════════════════════════════════════
+#
+# This file is the single source of truth for self-learning adjustments.
+# Read by:
+#   - Generation prompts (rendered via Jinja2)
+#   - Self-learning module (modified by policy_updater)
+#   - Quality gate (dynamic regex patterns)
+#
+# Versioned by sha256 hash. Stored in SQLite policies table.
+
+version: "v1_initial"
+autopilot_paused: false
+
+# ─── 1. Strategy Rubric Weights ────────────────────────────────────
+# Applied at candidate selection. Higher = more likely to be picked.
+rubric_weights:
+  process_under_ai: 1.0       # AI in sales, support, documents, ops
+  pilot_without_chaos: 1.0    # safe test design, owner, stop condition
+  implementation_metric: 1.0  # time, cost, quality measurements
+  ai_regulation: 1.0          # data, access, audit, human-in-loop
+  tool_through_scenario: 1.0  # tool fit for specific process
+  anti_hype: 1.0              # correction of inflated expectations
+
+# ─── 2. Post Parameters (per slot) ─────────────────────────────────
+post_params:
+  morning:
+    target_chars: [800, 1400]
+    paragraphs: [4, 5]
+    max_bold: 1
+    max_emoji: 0
+    scheduled_hour_msk: 10
+  evening:
+    target_chars: [400, 700]
+    paragraphs: [2, 3]
+    max_bold: 1
+    max_emoji: 0
+    scheduled_hour_msk: 18
+  weekly_digest:
+    target_chars: [2500, 4500]
+    paragraphs: [5, 8]
+    max_bold: 2
+    max_emoji: 0
+    scheduled_hour_msk: 19
+
+# ─── 3. Regex Gates (auto-populated by self-learning) ─────────────
+# Each entry: {name, pattern, slot, action}
+# action: warn | fail
+# These are ADDED to the core patterns in editorial_quality_gate.py.
+# Core patterns (FORBIDDEN_RE, CLICHE_RE) cannot be modified by autopilot.
+regex_gates: []
+
+# ─── 4. Source Scoring (domain adjustments) ────────────────────────
+# Applied to source_fit_score during enrichment.
+# Range: -1.0 (block) to +1.0 (boost)
+source_scores:
+  default: 0.0
+  # Examples (populated by self-learning):
+  # openai.com: 0.3
+  # anthropic.com: 0.3
+  # some-spam-site.com: -0.8
+
+# ─── 5. Visual Policy ──────────────────────────────────────────────
+visual_policy:
+  title_max_chars: 78
+  blocks_range: [3, 5]
+  palette: "editorial_light"  # editorial_light | editorial_dark
+  kind: "process_scheme"      # process_scheme | editorial_metaphor
+  width: 1344
+  height: 768
+
+# ─── Safety boundaries (DO NOT modify via autopilot) ───────────────
+safety:
+  # Rate limits
+  max_changes_per_day: 1
+  max_changes_per_week: 3
+  max_rollbacks_per_week: 3
+
+  # Anomaly detection thresholds
+  engagement_drop_24h_pct: 30   # freeze if >30% drop in 24h
+  engagement_drop_7d_pct: 50    # freeze if >50% drop in 7d
+  subscribers_drop_24h_pct: 5   # freeze if >5% subs loss in 24h
+
+  # Rollback triggers (after promote)
+  rollback_48h_engagement_pct: 85  # rollback if <85% of baseline in 48h
+  rollback_7d_engagement_pct: 90   # rollback if <90% of baseline in 7d
+  rollback_7d_subscribers_pct: 97  # rollback if <97% subs in 7d

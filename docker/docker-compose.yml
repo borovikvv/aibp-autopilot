@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aibp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aibp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aibp}
+      POSTGRES_DB: aibp
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aibp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  aibp:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: aibp-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://aibp:${POSTGRES_PASSWORD:-aibp}@postgres:5432/aibp
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHANNEL_ID_PROD: ${TELEGRAM_CHANNEL_ID_PROD}
+      TELEGRAM_CHANNEL_ID_TEST: ${TELEGRAM_CHANNEL_ID_TEST}
+      TELEGRAM_ALERT_CHAT_ID: ${TELEGRAM_ALERT_CHAT_ID}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      XAI_API_KEY: ${XAI_API_KEY}
+      APP_ENV: production
+    volumes:
+      - ../config:/app/config
+      - ../data:/app/data
+      - ../reports:/app/reports
+      - ../prompts:/app/prompts
+      - /srv/static/aibp:/srv/static/aibp
+    command: python3 -m aibp.cli smoke-test
+
+volumes:
+  pgdata:

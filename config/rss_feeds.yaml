@@ -1,0 +1,106 @@
+# Default RSS feeds for @AI_Business_Pulse
+# Channel focus: practical AI adoption in business workflows
+#
+# Format:
+#   - name: human-readable name
+#     url: RSS feed URL
+#     category: news | blog | research | company
+#     weight: 1.0 (default), can be adjusted per-feed
+#     lang: en | ru
+
+feeds:
+  # ─── Major AI news ────────────────────────────────────────────
+  - name: TechCrunch AI
+    url: https://techcrunch.com/category/artificial-intelligence/feed/
+    category: news
+    weight: 1.0
+    lang: en
+
+  - name: VentureBeat AI
+    url: https://venturebeat.com/category/ai/feed/
+    category: news
+    weight: 1.0
+    lang: en
+
+  - name: The Verge AI
+    url: https://www.theverge.com/rss/ai-artificial-intelligence/index.xml
+    category: news
+    weight: 0.9
+    lang: en
+
+  - name: MIT Technology Review AI
+    url: https://www.technologyreview.com/topic/artificial-intelligence/feed
+    category: news
+    weight: 1.1
+    lang: en
+
+  # ─── Company blogs ────────────────────────────────────────────
+  - name: OpenAI Blog
+    url: https://openai.com/blog/rss.xml
+    category: company
+    weight: 1.2
+    lang: en
+
+  - name: Anthropic Blog
+    url: https://www.anthropic.com/news/rss.xml
+    category: company
+    weight: 1.2
+    lang: en
+
+  - name: Google AI Blog
+    url: https://blog.research.google/feeds/posts/default?alt=rss
+    category: company
+    weight: 1.0
+    lang: en
+
+  - name: Meta AI Blog
+    url: https://ai.meta.com/blog/rss/
+    category: company
+    weight: 0.9
+    lang: en
+
+  - name: Microsoft AI Blog
+    url: https://blogs.microsoft.com/ai/feed/
+    category: company
+    weight: 1.0
+    lang: en
+
+  # ─── Research ─────────────────────────────────────────────────
+  - name: Hugging Face Blog
+    url: https://huggingface.co/blog/feed.xml
+    category: blog
+    weight: 1.0
+    lang: en
+
+  - name: Sebastian Raschka Blog
+    url: https://sebastianraschka.com/rss_feed.xml
+    category: blog
+    weight: 0.9
+    lang: en
+
+  # ─── Russian sources ──────────────────────────────────────────
+  - name: Habr AI
+    url: https://habr.com/ru/hub/ai/rss/
+    category: news
+    weight: 0.8
+    lang: ru
+
+  - name: TAdviser AI
+    url: https://www.tadviser.ru/index.php/Файл:RSS-каналы_TAdviser
+    category: news
+    weight: 0.6
+    lang: ru
+
+# ─── Collection settings ─────────────────────────────────────────
+settings:
+  # Max items per feed per run
+  max_items_per_feed: 20
+
+  # Skip items older than this (days)
+  max_age_days: 14
+
+  # Dedup by URL hash
+  dedup: true
+
+  # User agent for fetching
+  user_agent: "AIBP-Autopilot/1.0 (+https://t.me/AI_Business_Pulse)"
