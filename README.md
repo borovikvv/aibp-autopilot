@@ -19,27 +19,29 @@
 
 ## Быстрый старт (для Hermes Agent)
 
+**Самый простой путь:** дай Hermes Agent промпт из `prompts/hermes_bootstrap.md` — он развернёт всё сам, включая PostgreSQL.
+
 ```bash
-# 1. Клонировать
+# 1. Клонировать (или пусть Hermes сделает это сам)
 git clone https://github.com/borovikvv/aibp-autopilot.git
 cd aibp-autopilot
 
-# 2. Установить зависимости
-make install
+# 2. Запустить bootstrap (установит Python-зависимости, PostgreSQL, инициализирует БД)
+python3 scripts/bootstrap.py
 
-# 3. Скопировать .env и заполнить секретами
-cp .env.example .env
-# Отредактировать .env — вписать TELEGRAM_BOT_TOKEN, OPENROUTER_API_KEY, DATABASE_URL
+# 3. Заполнить секреты в .env (TELEGRAM_BOT_TOKEN, OPENROUTER_API_KEY, etc.)
+nano .env
 
-# 4. Инициализировать БД
-make db-init
+# 4. Повторно проверить
+python3 scripts/bootstrap.py --skip-postgres
 
-# 5. Запустить smoke-тест
-make smoke-test
-
-# 6. Зарегистрировать cron-джобы в Hermes
-make hermes-register
+# 5. Зарегистрировать cron-джобы в Hermes (см. prompts/hermes_bootstrap.md)
 ```
+
+Перед стартом нужны:
+- **TELEGRAM_BOT_TOKEN** (от @BotFather)
+- **OPENROUTER_API_KEY** (от https://openrouter.ai/keys)
+- ID обоих каналов (prod и test), бот должен быть админом в обоих
 
 После этого система работает автономно. См. `docs/install.md` для подробностей.
 

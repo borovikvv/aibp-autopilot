@@ -1,17 +1,35 @@
 # Установка AIBP Autopilot через Hermes Agent
 
-> Эта инструкция написана так, чтобы Hermes Agent мог выполнить её
-> самостоятельно — шаг за шагом, с проверкой каждого этапа.
+> **TL;DR:** Дай Hermes Agent промпт `prompts/hermes_bootstrap.md` — он развернёт всё сам.
 
-## Предварительные требования
+## Быстрый старт (одна команда для Hermes)
 
-На сервере должны быть установлены:
-- Python 3.11+
-- PostgreSQL 14+ (или Docker для запуска в контейнере)
-- Git
-- Hermes Agent (если ещё не установлен)
+После установки Hermes Agent на сервере, дай ему этот промпт:
 
-## Шаг 1: Клонирование репозитория
+```
+Прочитай файл /root/aibp-autopilot/prompts/hermes_bootstrap.md
+и выполни все шаги, описанные там.
+```
+
+Hermes выполнит:
+1. Клонирование репозитория
+2. Установку Python-зависимостей
+3. **Установку и настройку PostgreSQL** (автоматически)
+4. Инициализацию схемы БД
+5. Smoke-тест (проверка DB, Telegram, OpenRouter)
+6. Регистрацию 13 cron-джоб
+
+Перед стартом у тебя должны быть готовы:
+- **TELEGRAM_BOT_TOKEN** (от @BotFather)
+- **OPENROUTER_API_KEY** (от https://openrouter.ai/keys)
+- ID обоих каналов (prod и test)
+- Бот должен быть **админом** в обоих каналах
+
+---
+
+## Ручная установка (если без Hermes)
+
+### Шаг 1: Клонирование
 
 ```bash
 cd /root
@@ -19,22 +37,65 @@ git clone https://github.com/borovikvv/aibp-autopilot.git
 cd aibp-autopilot
 ```
 
-## Шаг 2: Установка Python-зависимостей
+### Шаг 2: Установка зависимостей
 
 ```bash
+# Создать venv (рекомендуется)
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
+
+# Или без venv (системный Python)
+pip3 install --break-system-packages -r requirements.txt
+pip3 install --break-system-packages -e .
 ```
 
-## Шаг 3: Настройка окружения
+### Шаг 3: Настройка PostgreSQL
+
+**Вариант A: Автоматическая установка (Debian/Ubuntu)**
 
 ```bash
-cp .env.example .env
+bash scripts/setup_postgres.sh
 ```
 
-Отредактируйте `.env` — обязательно заполнить:
+Скрипт сам:
+- Установит PostgreSQL через apt (если не установлен)
+- Создаст пользователя `aibp` и БД `aibp`
+- Сгенерирует пароль и запишет `DATABASE_URL` в `.env`
+- Проверит подключение
+
+**Вариант B: PostgreSQL в Docker**
+
+```bash
+bash scripts/setup_postgres.sh --docker
+```
+
+**Вариант C: Существующий PostgreSQL**
+
+Если у тебя уже есть PostgreSQL — создай БД и пользователя вручную:
+
+```bash
+sudo -u postgres createuser aibp -P
+sudo -u postgres createdb aibp -O aibp
+```
+
+Затем впиши `DATABASE_URL` в `.env`:
+```
+DATABASE_URL=postgresql://aibp:ТВОЙ_ПАРОЛЬ@localhost:5432/aibp
+```
+
+И запусти:
+```bash
+bash scripts/setup_postgres.sh --no-install
+```
+
+### Шаг 4: Заполнение секретов
+
+```bash
+cp .env.example .env  # если ещё не создан
+nano .env
+```
+
+Обязательно заполни:
 
 | Переменная | Где получить |
 |------------|--------------|
@@ -42,39 +103,19 @@ cp .env.example .env
 | `TELEGRAM_CHANNEL_ID_PROD` | ID канала @AI_Business_Pulse (с -100 префиксом) |
 | `TELEGRAM_CHANNEL_ID_TEST` | ID тестового канала |
 | `TELEGRAM_ALERT_CHAT_ID` | Твой личный chat_id (для алертов) |
-| `DATABASE_URL` | `postgresql://aibp:PASSWORD@localhost:5432/aibp` |
+| `DATABASE_URL` | Уже заполнен после Step 3 (если использовал setup_postgres.sh) |
 | `OPENROUTER_API_KEY` | https://openrouter.ai/keys |
-| `XAI_API_KEY` | https://x.ai/api (опционально, для генерации картинок) |
+| `XAI_API_KEY` | https://x.ai/api (опционально) |
 
-Бот должен быть **админом** в обоих каналах.
-
-## Шаг 4: Инициализация базы данных
-
-### Вариант A: PostgreSQL в Docker (проще)
+### Шаг 5: Инициализация БД
 
 ```bash
-# Запустить PostgreSQL
-docker-compose -f docker/docker-compose.yml up -d postgres
-
-# Дождаться запуска
-sleep 10
-
-# Инициализировать схему
 make db-init
 ```
 
-### Вариант B: Существующий PostgreSQL
+Это создаст все таблицы в PostgreSQL + SQLite (для self-learning).
 
-```bash
-# Создать БД и пользователя (если ещё нет)
-sudo -u postgres createuser aibp -P
-sudo -u postgres createdb aibp -O aibp
-
-# Инициализировать схему
-make db-init
-```
-
-## Шаг 5: Smoke-тест
+### Шаг 6: Smoke-тест
 
 ```bash
 make smoke-test
@@ -90,187 +131,54 @@ Checking policy.yaml... ✅ OK
 ✅ All checks passed. System ready.
 ```
 
-Если что-то не получилось — проверь `.env` и что БД запущена.
-
-## Шаг 6: Ручной тест пайплайна
-
-Запусти полный цикл вручную, чтобы убедиться что всё работает:
+### Шаг 7: Ручной тест пайплайна
 
 ```bash
-# 1. Собрать RSS-источники
-make collect-rss
-
-# 2. Обогатить через LLM
-make enrich
-
-# 3. Сгенерировать утренний пост
-make generate-morning
-
-# 4. Опубликовать (проверит очередь и отправит в Telegram)
-make publish
+make run-all
 ```
 
-После `make publish` проверь тестовый канал — там должен появиться пост.
+Это запустит: RSS → Enrichment → Generation → Publish. Проверь тестовый канал — там должен появиться пост.
 
-## Шаг 7: Регистрация cron-джоб в Hermes Agent
+### Шаг 8: Регистрация cron-джоб
 
-Создай следующие cron-джобы в Hermes (через `cronjob(action='create', ...)`):
+Если используешь Hermes Agent — см. `prompts/hermes_bootstrap.md` (Step 5).
 
-```python
+Если без Hermes — добавь в системный crontab:
+
+```bash
+crontab -e
+```
+
+```cron
 # RSS Collector — каждый час
-cronjob(
-    action='create',
-    name='AIBP — RSS Collector',
-    schedule='0 * * * *',
-    prompt='Run: cd /root/aibp-autopilot && source .venv/bin/activate && python3 -m aibp.cli collect-rss',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
+0 * * * * cd /root/aibp-autopilot && python3 -m aibp.cli collect-rss >> reports/logs/cron.log 2>&1
 
 # Enrichment — каждые 2 часа
-cronjob(
-    action='create',
-    name='AIBP — Enrichment',
-    schedule='30 */2 * * *',
-    prompt='Run: cd /root/aibp-autopilot && source .venv/bin/activate && python3 -m aibp.cli enrich',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
+30 */2 * * * cd /root/aibp-autopilot && python3 -m aibp.cli enrich >> reports/logs/cron.log 2>&1
 
-# Morning generation — 09:00 MSK (06:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Morning Generation',
-    schedule='0 6 * * *',
-    prompt='Run: cd /root/aibp-autopilot && source .venv/bin/activate && python3 -m aibp.cli generate --slot morning',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
+# Morning Generation — 09:00 MSK (06:00 UTC)
+0 6 * * * cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot morning >> reports/logs/cron.log 2>&1
 
-# Evening generation — 17:00 MSK (14:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Evening Generation',
-    schedule='0 14 * * *',
-    prompt='Run: cd /root/aibp-autopilot && source .venv/bin/activate && python3 -m aibp.cli generate --slot evening',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
+# Evening Generation — 17:00 MSK (14:00 UTC)
+0 14 * * * cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot evening >> reports/logs/cron.log 2>&1
 
 # Publisher — каждые 5 минут
-cronjob(
-    action='create',
-    name='AIBP — Publisher',
-    schedule='*/5 * * * *',
-    prompt='Run: cd /root/aibp-autopilot && source .venv/bin/activate && python3 -m aibp.cli publish',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
+*/5 * * * * cd /root/aibp-autopilot && python3 -m aibp.cli publish >> reports/logs/cron.log 2>&1
 
 # Engagement Collector — каждые 4 часа
-cronjob(
-    action='create',
-    name='AIBP — Engagement Collector',
-    schedule='0 */4 * * *',
-    prompt='Run: cd /root/aibp-autopilot && source .venv/bin/activate && python3 -m aibp.cli collect-engagement',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
+0 */4 * * * cd /root/aibp-autopilot && python3 -m aibp.cli collect-engagement >> reports/logs/cron.log 2>&1
 
-# Pattern Miner — Sundays 22:00 MSK (19:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Pattern Miner',
-    schedule='0 19 * * 0',
-    prompt='Run: cd /root/aibp-autopilot && source .venv/bin/activate && python3 -m aibp.cli mine-patterns',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
+# Pattern Miner — Sundays 22:00 MSK
+0 19 * * 0 cd /root/aibp-autopilot && python3 -m aibp.cli mine-patterns >> reports/logs/cron.log 2>&1
 
-# Policy Updater — Mondays 02:00 MSK (23:00 UTC Sunday)
-cronjob(
-    action='create',
-    name='AIBP — Policy Updater',
-    schedule='0 23 * * 0',
-    prompt='Run: cd /root/aibp-autopilot && source .venv/bin/activate && python3 -m aibp.cli update-policy',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
+# Safety Check — daily 05:00 MSK
+0 2 * * * cd /root/aibp-autopilot && python3 -m aibp.cli safety-check >> reports/logs/cron.log 2>&1
 
-# Shadow Runner — daily 02:30 MSK (23:30 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Shadow Runner',
-    schedule='30 23 * * *',
-    prompt='Run: cd /root/aibp-autopilot && source .venv/bin/activate && python3 -m aibp.cli run-shadow',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Decision Engine — daily 03:00 MSK (00:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Decision Engine',
-    schedule='0 0 * * *',
-    prompt='Run: cd /root/aibp-autopilot && source .venv/bin/activate && python3 -m aibp.cli decide',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Rollback Check — daily 04:00 MSK (01:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Rollback Check',
-    schedule='0 1 * * *',
-    prompt='Run: cd /root/aibp-autopilot && source .venv/bin/activate && python3 -m aibp.cli rollback-check',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Safety Check — daily 05:00 MSK (02:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Safety Check',
-    schedule='0 2 * * *',
-    prompt='Run: cd /root/aibp-autopilot && source .venv/bin/activate && python3 -m aibp.cli safety-check',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Dashboard — daily 06:00 MSK (03:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Dashboard',
-    schedule='0 3 * * *',
-    prompt='Run: cd /root/aibp-autopilot && source .venv/bin/activate && python3 -m aibp.cli dashboard',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
+# Dashboard — daily 06:00 MSK
+0 3 * * * cd /root/aibp-autopilot && python3 -m aibp.cli dashboard >> reports/logs/cron.log 2>&1
 ```
 
-## Шаг 8: Проверка
-
-Через 1 час проверь:
-- `reports/logs/` — должны быть логи cron-джоб
-- Тестовый Telegram-канал — должен быть новый пост (если были RSS-источники)
-- `data/self_learning.db` — должна существовать SQLite база
-
-Через 24 часа:
-- Дашборд должен быть доступен (если настроен Caddy)
-- В `experiments_log` могут появиться первые эксперименты (после pattern miner'а)
+---
 
 ## Что делать если что-то сломалось
 
@@ -296,7 +204,20 @@ psql $DATABASE_URL -c "SELECT id, title, publish_error FROM feed_items WHERE pub
 
 ### LLM-бюджет превышен
 
-Проверь `reports/llm_cost.jsonl` — там все затраты. При необходимости увеличь `OPENROUTER_DAILY_BUDGET_USD` в `.env`.
+Проверь `reports/llm_cost.jsonl`. При необходимости увеличь `OPENROUTER_DAILY_BUDGET_USD` в `.env`.
+
+### PostgreSQL упал
+
+```bash
+# Проверить статус
+sudo systemctl status postgresql
+
+# Перезапустить
+sudo systemctl restart postgresql
+
+# Если в Docker:
+docker restart aibp-postgres
+```
 
 ## Резервное копирование
 
