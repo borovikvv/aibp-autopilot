@@ -105,7 +105,7 @@ Check the test channel — there should be a new post. If yes, deployment is suc
 
 ### Step 5: Register Hermes cron jobs
 
-Register these 13 cron jobs in Hermes. Run each `cronjob(action='create', ...)` call:
+Register these 15 cron jobs in Hermes. Run each `cronjob(action='create', ...)` call:
 
 ```python
 # RSS Collector — every hour
@@ -147,6 +147,29 @@ cronjob(
     name='AIBP — Evening Generation',
     schedule='0 14 * * *',
     prompt='cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot evening 2>&1',
+    workdir='/root/aibp-autopilot',
+    deliver='origin',
+    enabled_toolsets=['terminal'],
+)
+
+# Stage Morning Generation (shadow test) — 09:30 MSK (06:30 UTC)
+# Generates post for TEST channel using policy.stage.yaml (if exists)
+cronjob(
+    action='create',
+    name='AIBP — Stage Morning Generation',
+    schedule='30 6 * * *',
+    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot morning --env stage 2>&1',
+    workdir='/root/aibp-autopilot',
+    deliver='origin',
+    enabled_toolsets=['terminal'],
+)
+
+# Stage Evening Generation (shadow test) — 17:30 MSK (14:30 UTC)
+cronjob(
+    action='create',
+    name='AIBP — Stage Evening Generation',
+    schedule='30 14 * * *',
+    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot evening --env stage 2>&1',
     workdir='/root/aibp-autopilot',
     deliver='origin',
     enabled_toolsets=['terminal'],

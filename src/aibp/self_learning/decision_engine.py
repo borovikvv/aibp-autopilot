@@ -56,46 +56,84 @@ def get_engagement_for_policy_version(policy_version: str) -> list[dict]:
 
 
 def compute_engagement_rates(posts: list[dict]) -> list[float]:
-    """Compute engagement rate (views / subscribers) for each post."""
+    """Compute engagement rate (views / subscribers) for each post.
+
+    Skips posts where subscribers is None or 0 (can't compute rate).
+    """
     rates = []
     for p in posts:
+        subs = p.get("latest_subs")
+        if not subs or subs <= 0:
+            continue
         views = p.get("latest_views") or 0
-        subs = p.get("latest_subs") or 1
-        if subs > 0:
-            rates.append(views / subs)
+        rates.append(views / subs)
     return rates
 
 
-def make_decision(experiment: dict) -> dict:
-    """Run statistical test and decide promote/reject/continue."""
-    control_posts = get_engagement_for_policy_version(experiment["policy_before"])
-    shadow_posts = get_engagement_for_policy_version(experiment["policy_after"])
+def compute_decision(
+    control_rates: list[float],
+    shadow_rates: list[float],
+    exp_age_days: int,
+) -> dict:
+    """Pure function: given engagement data, return promote/reject/continue decision.
 
-    control_rates = compute_engagement_rates(control_posts)
-    shadow_rates = compute_engagement_rates(shadow_posts)
+    This is separated from make_decision() for testability — no I/O, no SQLite,
+    no time-dependent calls. All inputs are explicit.
 
+    Decision rules:
+        - If n < 5 in either group AND exp_age < 14 days → continue (wait for more data)
+        - If n < 5 in either group AND exp_age >= 14 days → reject (gave up waiting)
+        - If shadow_better_pct >= 10 AND p_value < 0.05 AND cohen_d > 0.3 → promote
+        - If shadow_better_pct < -5 → reject (clearly worse)
+        - Otherwise → reject (no significant improvement)
+
+    Args:
+        control_rates: list of engagement rates (views/subs) for control posts
+        shadow_rates: list of engagement rates for shadow posts
+        exp_age_days: age of experiment in days (used for insufficient-data decision)
+
+    Returns:
+        dict with keys: decision, reason, control_engagement, shadow_engagement,
+                        effect_size, p_value
+    """
+    import numpy as np
+
+    # Insufficient data check
     if len(control_rates) < 5 or len(shadow_rates) < 5:
-        # Not enough data — extend window (max 14 days)
-        exp_age_days = (datetime.now(timezone.utc) -
-                        datetime.fromisoformat(experiment["started_at"])).days
         if exp_age_days < 14:
-            return {"decision": "continue", "reason": "insufficient_data_extending"}
-        return {"decision": "reject", "reason": "insufficient_data_after_14d"}
+            return {
+                "decision": "continue",
+                "reason": "insufficient_data_extending",
+                "control_engagement": {"mean": float(np.mean(control_rates)) if control_rates else 0, "n": len(control_rates)},
+                "shadow_engagement": {"mean": float(np.mean(shadow_rates)) if shadow_rates else 0, "n": len(shadow_rates)},
+                "effect_size": None,
+                "p_value": None,
+            }
+        return {
+            "decision": "reject",
+            "reason": "insufficient_data_after_14d",
+            "control_engagement": {"mean": float(np.mean(control_rates)) if control_rates else 0, "n": len(control_rates)},
+            "shadow_engagement": {"mean": float(np.mean(shadow_rates)) if shadow_rates else 0, "n": len(shadow_rates)},
+            "effect_size": None,
+            "p_value": None,
+        }
 
-    # Welch's t-test
+    # Welch's t-test (does not assume equal variance)
     t_stat, p_value = scipy_stats.ttest_ind(shadow_rates, control_rates, equal_var=False)
 
-    # Cohen's d for effect size
-    import numpy as np
+    # Cohen's d for effect size (pooled standard deviation)
     mean_diff = float(np.mean(shadow_rates) - np.mean(control_rates))
     pooled_std = float(np.sqrt(
         (np.var(shadow_rates, ddof=1) + np.var(control_rates, ddof=1)) / 2
     ))
     cohen_d = mean_diff / pooled_std if pooled_std > 0 else 0
 
-    # Decision rules
-    shadow_better_pct = (float(np.mean(shadow_rates)) / float(np.mean(control_rates)) - 1) * 100
+    # How much better (or worse) is shadow vs control, in percent
+    control_mean = float(np.mean(control_rates))
+    shadow_mean = float(np.mean(shadow_rates))
+    shadow_better_pct = (shadow_mean / control_mean - 1) * 100 if control_mean > 0 else 0
 
+    # Decision rules (order matters!)
     if shadow_better_pct >= 10 and p_value < 0.05 and cohen_d > 0.3:
         decision = "promote"
         reason = f"shadow +{shadow_better_pct:.1f}%, p={p_value:.4f}, d={cohen_d:.2f}"
@@ -109,11 +147,29 @@ def make_decision(experiment: dict) -> dict:
     return {
         "decision": decision,
         "reason": reason,
-        "control_engagement": {"mean": float(np.mean(control_rates)), "n": len(control_rates)},
-        "shadow_engagement": {"mean": float(np.mean(shadow_rates)), "n": len(shadow_rates)},
+        "control_engagement": {"mean": control_mean, "n": len(control_rates)},
+        "shadow_engagement": {"mean": shadow_mean, "n": len(shadow_rates)},
         "effect_size": round(cohen_d, 3),
         "p_value": round(p_value, 4),
     }
+
+
+def make_decision(experiment: dict) -> dict:
+    """Fetch engagement data for experiment and run compute_decision.
+
+    This is the I/O wrapper: reads from SQLite, computes experiment age,
+    then delegates to the pure compute_decision function.
+    """
+    control_posts = get_engagement_for_policy_version(experiment["policy_before"])
+    shadow_posts = get_engagement_for_policy_version(experiment["policy_after"])
+
+    control_rates = compute_engagement_rates(control_posts)
+    shadow_rates = compute_engagement_rates(shadow_posts)
+
+    exp_age_days = (datetime.now(timezone.utc) -
+                    datetime.fromisoformat(experiment["started_at"])).days
+
+    return compute_decision(control_rates, shadow_rates, exp_age_days)
 
 
 def promote_experiment(experiment: dict, decision: dict) -> bool:

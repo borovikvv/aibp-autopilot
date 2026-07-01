@@ -96,6 +96,12 @@ generate-evening:
 generate-weekly:
         $(PYTHON) -m aibp.cli generate --slot weekly_digest
 
+generate-stage-morning:
+        $(PYTHON) -m aibp.cli generate --slot morning --env stage
+
+generate-stage-evening:
+        $(PYTHON) -m aibp.cli generate --slot evening --env stage
+
 publish:
         $(PYTHON) -m aibp.cli publish
 

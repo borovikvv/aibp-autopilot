@@ -74,10 +74,17 @@ def smoke_test() -> None:
 
 @cli.command()
 @click.option("--slot", default="morning", type=click.Choice(["morning", "evening", "weekly_digest"]))
-def generate(slot: str) -> None:
+@click.option(
+    "--env",
+    "pipeline_env",
+    default="prod",
+    type=click.Choice(["prod", "stage"]),
+    help="prod → main channel + config/policy.yaml | stage → test channel + config/policy.stage.yaml",
+)
+def generate(slot: str, pipeline_env: str) -> None:
     """Generate one post for the slot."""
     from aibp.generation.pipeline import run
-    raise SystemExit(run(slot=slot))
+    raise SystemExit(run(slot=slot, pipeline_env=pipeline_env))
 
 
 @cli.command()

@@ -76,11 +76,26 @@ class Settings:
 
 
 # ─── Policy loader ──────────────────────────────────────────────────
-def load_policy(path: Path | None = None) -> dict[str, Any]:
-    """Load canonical policy.yaml."""
-    if path is None:
-        path = PROJECT_ROOT / "config" / "policy.yaml"
-    with open(path, encoding="utf-8") as f:
+def load_policy(path: Path | None = None, pipeline_env: str = "prod") -> dict[str, Any]:
+    """Load canonical policy.yaml.
+
+    Args:
+        path: Explicit path to policy file. If None, auto-detect by pipeline_env.
+        pipeline_env: "prod" → config/policy.yaml, "stage" → config/policy.stage.yaml
+                      (falls back to config/policy.yaml if stage file missing).
+    """
+    if path is not None:
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f)
+
+    prod_path = PROJECT_ROOT / "config" / "policy.yaml"
+    if pipeline_env == "stage":
+        stage_path = PROJECT_ROOT / "config" / "policy.stage.yaml"
+        if stage_path.exists():
+            with open(stage_path, encoding="utf-8") as f:
+                return yaml.safe_load(f)
+        # Fall back to prod policy if stage policy not yet written
+    with open(prod_path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
