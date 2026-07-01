@@ -116,6 +116,9 @@ def apply_change_to_policy(policy: dict, hypothesis: dict) -> dict:
         param = spec["param"]
         new_policy["visual_policy"][param] = spec["new_value"]
 
+    else:
+        raise ValueError(f"Unknown experiment_type: {exp_type}")
+
     # Bump version
     new_policy["version"] = f"v_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     return new_policy

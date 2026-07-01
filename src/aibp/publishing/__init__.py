@@ -1,1 +1,1 @@
-"""Layer 4: Publishing — Telegram publisher via aiogram."""
+"""Layer 4: Publishing — Telegram publisher via httpx (direct Bot API)."""

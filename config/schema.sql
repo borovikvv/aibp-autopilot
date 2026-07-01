@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS feed_items (
     rank_breakdown           jsonb,
     relevance                numeric DEFAULT 0,        -- source relevance score
     -- Pipeline state (transactional outbox)
+    -- Lifecycle: new → enriched → approved → published (prod path)
+    --            new → enriched → stage_ready → published (stage/shadow path)
+    --            new → enriched → rejected (quality gate fail)
+    --            new → failed (enrichment error)
     status                   text NOT NULL DEFAULT 'new',  -- new|enriched|stage_ready|approved|published|rejected|failed
     pipeline_env             text NOT NULL DEFAULT 'prod', -- stage|prod
     target_channel           text NOT NULL DEFAULT 'main', -- test|main
@@ -84,24 +88,6 @@ CREATE TABLE IF NOT EXISTS rss_feeds (
     last_error  text,
     created_at  timestamptz DEFAULT now()
 );
-
--- ─── Engagement metrics (filled by self-learning collector) ───────
--- Note: stored in SQLite for self-learning, but this PG table is for
--- cross-layer visibility (e.g., publisher can read last known engagement).
-CREATE TABLE IF NOT EXISTS engagement_snapshots (
-    id              bigserial PRIMARY KEY,
-    feed_item_id    bigint NOT NULL REFERENCES feed_items(id),
-    measured_at     timestamptz NOT NULL DEFAULT now(),
-    views           integer,
-    forwards        integer,
-    replies         integer,
-    reactions_count integer,
-    reactions_breakdown jsonb,
-    subscribers_at  integer,
-    UNIQUE (feed_item_id, measured_at)
-);
-
-CREATE INDEX IF NOT EXISTS idx_engagement_feed ON engagement_snapshots (feed_item_id, measured_at DESC);
 
 -- ─── Cron job execution log (observability) ───────────────────────
 CREATE TABLE IF NOT EXISTS cron_runs (

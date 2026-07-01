@@ -50,11 +50,22 @@ class OpenRouterClient:
         self.api_key = api_key or s.openrouter_api_key
         self.default_model = default_model or s.openrouter_model
         self.daily_budget = daily_budget_usd or s.openrouter_daily_budget_usd
-        self.cost_log = PROJECT_ROOT / "reports" / "llm_cost.jsonl"
-        self.cost_log.parent.mkdir(parents=True, exist_ok=True)
+        # Daily-rotated cost log: llm_cost_YYYYMMDD.jsonl
+        self._cost_log_dir = PROJECT_ROOT / "reports"
+        self._cost_log_dir.mkdir(parents=True, exist_ok=True)
+        self._today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+        self.cost_log = self._cost_log_dir / f"llm_cost_{self._today_str}.jsonl"
 
         if not self.api_key:
             raise LLMError("OPENROUTER_API_KEY not set")
+
+    def _get_today_cost_log(self) -> Path:
+        """Get today's cost log path, rotating if date changed."""
+        today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        if today != self._today_str:
+            self._today_str = today
+            self.cost_log = self._cost_log_dir / f"llm_cost_{today}.jsonl"
+        return self.cost_log
 
     @retry(
         stop=stop_after_attempt(3),
@@ -79,7 +90,7 @@ class OpenRouterClient:
         return (input_tokens / 1_000_000) * rates["input"] + (output_tokens / 1_000_000) * rates["output"]
 
     def _log_cost(self, model: str, input_tokens: int, output_tokens: int, cost: float) -> None:
-        """Append cost record to JSONL log."""
+        """Append cost record to today's JSONL log."""
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "model": model,
@@ -87,26 +98,34 @@ class OpenRouterClient:
             "output_tokens": output_tokens,
             "cost_usd": cost,
         }
-        with open(self.cost_log, "a", encoding="utf-8") as f:
+        log_path = self._get_today_cost_log()
+        with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
     def _check_budget(self) -> None:
-        """Check if today's cumulative cost exceeds budget."""
+        """Check if today's cumulative cost exceeds budget.
+
+        Reads only today's file (llm_cost_YYYYMMDD.jsonl), not the entire history.
+        O(n) where n = calls today, not n = calls since system started.
+        """
         if self.daily_budget <= 0:
             return
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        log_path = self._get_today_cost_log()
+        if not log_path.exists():
+            return  # no calls today yet
+
         total = 0.0
-        if self.cost_log.exists():
-            with open(self.cost_log, encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        rec = json.loads(line)
-                        if rec.get("timestamp", "").startswith(today):
-                            total += rec.get("cost_usd", 0)
-                    except json.JSONDecodeError:
-                        continue
+        with open(log_path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                    total += rec.get("cost_usd", 0)
+                except json.JSONDecodeError:
+                    continue
         if total >= self.daily_budget:
-            raise BudgetExceeded(f"Daily budget ${self.daily_budget} exceeded (${total:.2f} used)")
+            raise BudgetExceeded(
+                f"Daily budget ${self.daily_budget} exceeded (${total:.2f} used today)"
+            )
 
     def chat(
         self,

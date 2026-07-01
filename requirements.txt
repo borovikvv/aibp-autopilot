@@ -8,7 +8,8 @@ psycopg2-binary>=2.9,<3
 psycopg2-pool>=1.2
 
 # ─── Telegram ───────────────────────────────────────────────────────
-aiogram>=3.4,<4
+# Note: publisher uses httpx directly (no aiogram needed).
+# If we later need inline keyboards, callback handlers, etc., add aiogram back.
 
 # ─── RSS ────────────────────────────────────────────────────────────
 feedparser>=6.0
