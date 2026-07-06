@@ -176,7 +176,34 @@ crontab -e
 
 # Dashboard — daily 06:00 MSK
 0 3 * * * cd /root/aibp-autopilot && python3 -m aibp.cli dashboard >> reports/logs/cron.log 2>&1
+
+# Approval gate — обработка approve/reject кнопок, каждые 5 минут (со сдвигом на 2 мин,
+# чтобы не стартовать одновременно с engagement collector в минуту :00, см. ниже)
+2-59/5 * * * * cd /root/aibp-autopilot && python3 -m aibp.self_learning.approvals >> reports/logs/cron.log 2>&1
 ```
+
+### ⚠️ Координация getUpdates (обязательно к прочтению)
+
+Telegram Bot API разрешает **только одного** потребителя `getUpdates` на бота
+одновременно — два параллельных вызова дают `409 Conflict`. У нас потенциально
+два потребителя:
+
+- **Approval gate** (`aibp.self_learning.approvals`) — читает нажатия кнопок
+  approve/reject (тип `callback_query`).
+- **Engagement collector** — использует `getUpdates` **только как фолбэк**,
+  когда `TELEGRAM_METRICS_CHAT_ID` не задан.
+
+Защита в коде: оба потребителя берут общий межпроцессный файловый лок
+(`aibp.self_learning.telegram_lock`), поэтому одновременно `getUpdates` не
+вызовут — при занятом локе вызов пропускается и повторится на следующем тике.
+Если 409 всё же приходит (например, на боте выставлен webhook), approval gate
+шлёт алерт в `TELEGRAM_ALERT_CHAT_ID`, а не падает молча.
+
+**Рекомендация:** задай `TELEGRAM_METRICS_CHAT_ID` в `.env`. Тогда engagement
+collector использует метод `copyMessage` и вообще не трогает `getUpdates` —
+approval gate становится единственным потребителем, и конфликт исчезает по
+построению (не только по времени, но и по данным: разрушающий сдвиг offset
+approval-поллера больше не «съедает» `channel_post`-апдейты коллектора).
 
 ---
 

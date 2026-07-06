@@ -15,7 +15,9 @@ from aibp.self_learning.safety import requires_approval
 
 @pytest.fixture()
 def temp_db(tmp_path):
-    with patch.object(sl_db, "get_db_path", return_value=tmp_path / "test.db"):
+    from aibp.self_learning import telegram_lock
+    with patch.object(sl_db, "get_db_path", return_value=tmp_path / "test.db"), \
+         patch.object(telegram_lock, "get_db_path", return_value=tmp_path / "test.db"):
         sl_db.init_db()
         yield tmp_path
 
@@ -190,3 +192,76 @@ def test_stale_or_garbage_callbacks_ignored(temp_db):
     exp_id = _park_pending()
     assert handle_callback(f"exp_reject:{exp_id}") == "rejected"
     assert handle_callback(f"exp_approve:{exp_id}") == "ignored"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# getUpdates conflict handling (issue #24)
+# ═══════════════════════════════════════════════════════════════════
+
+_SETTINGS = type("S", (), {"telegram_bot_token": "TOKEN", "telegram_alert_chat_id": "999"})()
+
+
+def test_poller_skips_when_lock_is_busy(temp_db):
+    """If the engagement collector holds the getUpdates lock, the poller skips
+    without calling getUpdates at all."""
+    import asyncio
+    from contextlib import contextmanager
+    from unittest.mock import AsyncMock
+
+    from aibp.self_learning import approvals
+
+    @contextmanager
+    def busy_lock():
+        yield False
+
+    with patch.object(approvals, "get_settings", return_value=_SETTINGS), \
+         patch.object(approvals, "getupdates_lock", busy_lock), \
+         patch.object(approvals, "_get_updates", new=AsyncMock()) as get_updates:
+        result = asyncio.run(approvals.process_callbacks_async())
+
+    assert result == 0
+    get_updates.assert_not_called()
+
+
+def test_poller_alerts_on_409_conflict(temp_db):
+    """A 409 from Telegram must alert the owner instead of failing silently."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from aibp.self_learning import approvals
+
+    with patch.object(approvals, "get_settings", return_value=_SETTINGS), \
+         patch.dict("os.environ", {"TELEGRAM_METRICS_CHAT_ID": "123"}), \
+         patch.object(approvals, "_get_updates",
+                      new=AsyncMock(side_effect=approvals.GetUpdatesConflictError("conflict"))), \
+         patch.object(approvals, "_send_alert", new=AsyncMock()) as alert:
+        result = asyncio.run(approvals.process_callbacks_async())
+
+    assert result == 0
+    alert.assert_awaited_once()
+    # The alert names the fix (set the metrics chat)
+    assert "TELEGRAM_METRICS_CHAT_ID" in alert.await_args.args[2]
+
+
+def test_poller_processes_callback_under_real_lock(temp_db):
+    """End-to-end: with the lock free, a callback_query update is handled."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from aibp.self_learning import approvals, decision_engine
+
+    exp_id = _park_pending()
+    _insert_policy()
+    updates = [{"update_id": 5,
+                "callback_query": {"id": "cb1", "data": f"exp_reject:{exp_id}"}}]
+
+    with patch.object(approvals, "get_settings", return_value=_SETTINGS), \
+         patch.dict("os.environ", {"TELEGRAM_METRICS_CHAT_ID": "123"}), \
+         patch.object(approvals, "_get_updates", new=AsyncMock(return_value=updates)), \
+         patch.object(approvals, "_answer_callback", new=AsyncMock()) as answer, \
+         patch.object(decision_engine, "POLICY_PATH", temp_db / "policy.yaml"):
+        result = asyncio.run(approvals.process_callbacks_async())
+
+    assert result == 1
+    answer.assert_awaited()
+    assert _get_experiment(exp_id)["status"] == "rejected"
