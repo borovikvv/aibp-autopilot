@@ -25,8 +25,12 @@ async def send_message(
     text: str,
     parse_mode: str = "HTML",
     disable_preview: bool = True,
+    reply_markup: dict | None = None,
 ) -> dict:
-    """Send Telegram message via Bot API."""
+    """Send Telegram message via Bot API.
+
+    reply_markup: optional inline keyboard (used by the approval gate).
+    """
     url = f"{TELEGRAM_API}/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -34,6 +38,8 @@ async def send_message(
         "parse_mode": parse_mode,
         "disable_web_page_preview": disable_preview,
     }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(url, json=payload)
         return resp.json()

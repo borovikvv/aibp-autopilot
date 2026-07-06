@@ -142,6 +142,10 @@ run-redirect:
 resume-autopilot:
         $(PYTHON) -m aibp.cli resume-autopilot
 
+# Approval gate: process Telegram approve/reject button taps (issue #20)
+process-approvals:
+        $(PYTHON) -m aibp.self_learning.approvals
+
 # ─── Hermes Agent registration ─────────────────────────────────────
 
 hermes-register:

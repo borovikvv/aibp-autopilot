@@ -212,13 +212,8 @@ def make_decision(experiment: dict) -> dict:
     )
 
 
-def promote_experiment(experiment: dict, decision: dict) -> bool:
-    """Promote shadow policy to production."""
-    allowed, reason = check_rate_limit("change_applied")
-    if not allowed:
-        log.info("rate_limited_cannot_promote", experiment=experiment["id"], reason=reason)
-        return False
-
+def apply_promotion(experiment: dict, decision: dict) -> bool:
+    """Write the winning policy to production and finalize the experiment."""
     # Load shadow policy
     with sqlite_conn() as conn:
         row = conn.execute(
@@ -229,7 +224,6 @@ def promote_experiment(experiment: dict, decision: dict) -> bool:
             return False
 
     # Apply to production policy.yaml
-    from aibp.self_learning.policy_updater import apply_policy_to_stage
     prod_policy = json.loads(row["json_blob"])
     prod_policy["version"] = experiment["policy_after"]
 
@@ -266,6 +260,58 @@ def promote_experiment(experiment: dict, decision: dict) -> bool:
                        details={"action": "promote", "policy": experiment["policy_after"]})
     log.info("experiment_promoted", id=experiment["id"], policy=experiment["policy_after"])
     return True
+
+
+def mark_pending_approval(experiment: dict, decision: dict) -> None:
+    """Park a high-risk experiment until a human approves it (issue #20)."""
+    with sqlite_conn() as conn:
+        conn.execute(
+            """
+            UPDATE experiments_log
+            SET status = 'pending_approval',
+                control_engagement = ?,
+                shadow_engagement = ?,
+                effect_size = ?,
+                p_value = ?,
+                decision_reason = ?
+            WHERE id = ?
+            """,
+            (
+                json.dumps(decision["control_engagement"]),
+                json.dumps(decision["shadow_engagement"]),
+                decision["effect_size"],
+                decision["p_value"],
+                decision["reason"],
+                experiment["id"],
+            ),
+        )
+    log_autopilot_event("approval_requested", experiment_id=experiment["id"],
+                       details={"experiment_type": experiment["experiment_type"]})
+    log.info("experiment_pending_approval", id=experiment["id"],
+             type=experiment["experiment_type"])
+
+
+def promote_experiment(experiment: dict, decision: dict) -> bool:
+    """Promote the variant policy — directly, or via the human approval gate."""
+    from aibp.self_learning.safety import requires_approval
+
+    if requires_approval(experiment["experiment_type"]):
+        mark_pending_approval(experiment, decision)
+        try:
+            from aibp.self_learning.approvals import send_approval_request
+            send_approval_request(experiment, decision)
+        except Exception as e:
+            # The experiment stays pending_approval; the reminder can be
+            # re-sent manually via `python -m aibp.self_learning.approvals --remind`
+            log.error("approval_request_send_failed", experiment=experiment["id"], error=str(e))
+        return True
+
+    allowed, reason = check_rate_limit("change_applied")
+    if not allowed:
+        log.info("rate_limited_cannot_promote", experiment=experiment["id"], reason=reason)
+        return False
+
+    return apply_promotion(experiment, decision)
 
 
 def reject_experiment(experiment: dict, decision: dict) -> None:

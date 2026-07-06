@@ -86,6 +86,12 @@ safety:
   max_changes_per_week: 3
   max_rollbacks_per_week: 3
 
+  # Approval gate (issue #20): risk tiering of experiment types.
+  # Low risk (rubric_weight, cta, source_score, visual) auto-applies as before;
+  # high risk (post structure, quality gates) requires a human tap on a
+  # Telegram approve/reject button before promote.
+  approval_required_for: [post_param, regex_gate]
+
   # Experiment decision criterion (ADR-0008)
   # At 2 posts/day a 7-day window gives n≈14 per group — hard p-value
   # thresholds never fired. Bootstrap P(variant > control) is used instead.

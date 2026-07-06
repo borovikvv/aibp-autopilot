@@ -134,18 +134,20 @@ def test_experiment_lifecycle_promote(temp_sqlite_db, temp_policy):
     assert row["status"] == "shadow_running"
     assert row["started_at"] is not None
 
-    # ── Step 3: Simulate engagement data ──
-    # Insert post_features and engagement_metrics for both policy versions
+    # ── Step 3: Simulate interleaved engagement data (ADR-0007) ──
+    # Both groups live in the main channel and are separated by
+    # policy_version; posts alternate days like real interleaving.
     # Control (policy_before): 10 posts with mean engagement 0.10
-    # Shadow (policy_after): 10 posts with mean engagement 0.13 (+30%)
+    # Variant (policy_after): 10 posts with mean engagement 0.13 (+30%)
     control_version = temp_policy["version"]
     shadow_version = row["policy_after"]
 
     now = datetime.now(timezone.utc)
     with sl_db.sqlite_conn() as conn:
-        # Control posts
+        # Control posts (even days back)
         for i in range(10):
             feed_id = 1000 + i
+            posted = now - timedelta(days=i + 1)
             conn.execute(
                 """INSERT OR REPLACE INTO post_features
                    (feed_item_id, posted_at, slot, pipeline_env, target_channel,
@@ -153,40 +155,42 @@ def test_experiment_lifecycle_promote(temp_sqlite_db, temp_policy):
                     emoji_count, has_image, scheduled_hour, policy_version, policy_blob)
                    VALUES (?, ?, 'morning', 'prod', 'main', 'anti_hype',
                            1000, 4, 1, 0, 0, 10, ?, '{}')""",
-                (feed_id, (now - timedelta(days=i+1)).isoformat(), control_version),
+                (feed_id, posted.isoformat(), control_version),
             )
             conn.execute(
                 """INSERT INTO engagement_metrics
                    (feed_item_id, measured_at, views, forwards, replies,
                     reactions_count, subscribers_at)
                    VALUES (?, ?, ?, 0, 0, 0, 1000)""",
-                (feed_id, now.isoformat(), 100),  # 100 views / 1000 subs = 0.10
+                (feed_id, (posted + timedelta(hours=48)).isoformat(), 100),  # 0.10
             )
 
-        # Shadow posts (30% better)
+        # Variant posts (30% better, same channel and audience)
         for i in range(10):
             feed_id = 2000 + i
+            posted = now - timedelta(days=i + 1, hours=12)
             conn.execute(
                 """INSERT OR REPLACE INTO post_features
                    (feed_item_id, posted_at, slot, pipeline_env, target_channel,
                     strategy_rubric, char_count, paragraph_count, bold_count,
                     emoji_count, has_image, scheduled_hour, policy_version, policy_blob)
-                   VALUES (?, ?, 'morning', 'stage', 'test', 'anti_hype',
+                   VALUES (?, ?, 'morning', 'prod', 'main', 'anti_hype',
                            1000, 4, 1, 0, 0, 10, ?, '{}')""",
-                (feed_id, (now - timedelta(days=i+1)).isoformat(), shadow_version),
+                (feed_id, posted.isoformat(), shadow_version),
             )
             conn.execute(
                 """INSERT INTO engagement_metrics
                    (feed_item_id, measured_at, views, forwards, replies,
                     reactions_count, subscribers_at)
                    VALUES (?, ?, ?, 0, 0, 0, 1000)""",
-                (feed_id, now.isoformat(), 130),  # 130 views / 1000 subs = 0.13
+                (feed_id, (posted + timedelta(hours=48)).isoformat(), 130),  # 0.13
             )
 
     # ── Step 4: Run decision engine ──
-    # Make experiment look 8 days old (past 7-day window)
+    # Make experiment look 15 days old (past the 14-day window, ADR-0008),
+    # so all simulated posts fall inside the experiment period.
     with sl_db.sqlite_conn() as conn:
-        old_started = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        old_started = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
         conn.execute(
             "UPDATE experiments_log SET started_at = ? WHERE id = ?",
             (old_started, exp_id),
@@ -199,10 +203,11 @@ def test_experiment_lifecycle_promote(temp_sqlite_db, temp_policy):
 
     decision = make_decision(exp)
 
-    # With 30% improvement and low variance, should promote
+    # With 30% improvement and low variance, should promote (ADR-0008:
+    # effect_size is the relative effect, p_value is P(variant > control))
     assert decision["decision"] == "promote"
-    assert decision["effect_size"] > 0.3
-    assert decision["p_value"] < 0.05
+    assert decision["effect_size"] == pytest.approx(0.30, abs=0.02)
+    assert decision["p_value"] >= 0.95
 
 
 def test_experiment_lifecycle_reject_insufficient_data(temp_sqlite_db, temp_policy):
@@ -227,9 +232,9 @@ def test_experiment_lifecycle_reject_insufficient_data(temp_sqlite_db, temp_poli
     exp_id = create_experiment(hypothesis, temp_policy)
     assert exp_id is not None
 
-    # Make experiment 15 days old (past 14-day window)
+    # Make experiment 25 days old (past give-up point: window 14d + 7d grace)
     with sl_db.sqlite_conn() as conn:
-        old_started = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
+        old_started = (datetime.now(timezone.utc) - timedelta(days=25)).isoformat()
         conn.execute(
             "UPDATE experiments_log SET started_at = ?, status = 'shadow_running' WHERE id = ?",
             (old_started, exp_id),
