@@ -156,6 +156,35 @@ def init_db() -> None:
     log.info("sqlite_initialized", path=str(get_db_path()))
 
 
+# Telegram views keep growing for ~72h after publishing. Comparing posts of
+# different ages by MAX/last snapshot systematically favors older posts, so
+# all engagement comparisons use the snapshot closest to this fixed horizon.
+ENGAGEMENT_HORIZON_HOURS = 48
+
+
+def get_snapshot_at_horizon(feed_item_id: int, hours: int = ENGAGEMENT_HORIZON_HOURS) -> dict | None:
+    """Engagement snapshot closest to posted_at + hours.
+
+    If no snapshot exists exactly at the horizon, the nearest one is used —
+    before or after, whichever is closer in time. Returns None when the post
+    has no snapshots at all.
+    """
+    with sqlite_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT em.views, em.forwards, em.replies, em.reactions_count,
+                   em.subscribers_at, em.measured_at
+            FROM engagement_metrics em
+            JOIN post_features pf ON pf.feed_item_id = em.feed_item_id
+            WHERE em.feed_item_id = ?
+            ORDER BY ABS(julianday(em.measured_at) - julianday(pf.posted_at) - ? / 24.0)
+            LIMIT 1
+            """,
+            (feed_item_id, float(hours)),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def policy_version(policy_dict: dict) -> str:
     """Compute sha256 hash of policy dict (canonical JSON)."""
     canonical = json.dumps(policy_dict, sort_keys=True, ensure_ascii=False)

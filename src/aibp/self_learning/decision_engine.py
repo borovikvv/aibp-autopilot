@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import structlog
 from scipy import stats as scipy_stats
 
-from aibp.self_learning.db import sqlite_conn, log_autopilot_event
+from aibp.self_learning.db import sqlite_conn, log_autopilot_event, get_snapshot_at_horizon
 from aibp.self_learning.safety import is_autopilot_paused, check_rate_limit
 from aibp.utils.config import PROJECT_ROOT, load_policy
 
@@ -46,13 +46,13 @@ def get_engagement_for_policy_version(policy_version: str, since: str | None = N
     interleaving, control and variant posts are separated by policy_version
     within the same channel; `since` restricts to posts published after the
     experiment started.
+
+    Engagement is taken at a fixed horizon (posted_at + 48h, nearest snapshot)
+    rather than MAX/last, so posts of different ages compare fairly (issue #14).
     """
     query = """
-        SELECT pf.feed_item_id, pf.slot, pf.target_channel,
-               MAX(em.views) as latest_views,
-               MAX(em.subscribers_at) as latest_subs
+        SELECT pf.feed_item_id, pf.slot, pf.target_channel
         FROM post_features pf
-        JOIN engagement_metrics em ON em.feed_item_id = pf.feed_item_id
         WHERE pf.policy_version = ?
           AND pf.target_channel = 'main'
     """
@@ -60,11 +60,19 @@ def get_engagement_for_policy_version(policy_version: str, since: str | None = N
     if since is not None:
         query += " AND pf.posted_at >= ?"
         params.append(since)
-    query += " GROUP BY pf.feed_item_id, pf.slot, pf.target_channel"
 
     with sqlite_conn() as conn:
-        rows = conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        posts = [dict(r) for r in conn.execute(query, params).fetchall()]
+
+    result = []
+    for post in posts:
+        snapshot = get_snapshot_at_horizon(post["feed_item_id"])
+        if snapshot is None:
+            continue
+        post["latest_views"] = snapshot["views"]
+        post["latest_subs"] = snapshot["subscribers_at"]
+        result.append(post)
+    return result
 
 
 def compute_engagement_rates(posts: list[dict]) -> list[float]:

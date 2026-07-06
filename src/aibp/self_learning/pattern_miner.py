@@ -12,7 +12,7 @@ import structlog
 from scipy import stats as scipy_stats
 
 from aibp.enrichment.llm_client import OpenRouterClient
-from aibp.self_learning.db import sqlite_conn
+from aibp.self_learning.db import sqlite_conn, get_snapshot_at_horizon
 from aibp.utils.config import PROJECT_ROOT, load_policy
 
 log = structlog.get_logger()
@@ -22,20 +22,18 @@ REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_post_data(days: int = 7) -> list[dict]:
-    """Load posts with features and latest engagement."""
+    """Load posts with features and engagement at the fixed 48h horizon.
+
+    The horizon snapshot (not the last one) removes time-decay bias: views
+    grow ~72h after publishing, so the last snapshot favors older posts.
+    """
     with sqlite_conn() as conn:
         rows = conn.execute(
             """
             SELECT pf.feed_item_id, pf.posted_at, pf.slot, pf.target_channel,
                    pf.strategy_rubric, pf.topic_cluster, pf.source_domain,
                    pf.char_count, pf.paragraph_count, pf.bold_count, pf.emoji_count,
-                   pf.has_image, pf.scheduled_hour, pf.policy_version,
-                   (SELECT views FROM engagement_metrics em
-                    WHERE em.feed_item_id = pf.feed_item_id
-                    ORDER BY em.measured_at DESC LIMIT 1) as latest_views,
-                   (SELECT subscribers_at FROM engagement_metrics em
-                    WHERE em.feed_item_id = pf.feed_item_id
-                    ORDER BY em.measured_at DESC LIMIT 1) as latest_subs
+                   pf.has_image, pf.scheduled_hour, pf.policy_version
             FROM post_features pf
             WHERE pf.posted_at >= ?
               AND pf.target_channel = 'main'
@@ -43,7 +41,13 @@ def load_post_data(days: int = 7) -> list[dict]:
             """,
             ((datetime.now(timezone.utc) - timedelta(days=days)).isoformat(),),
         ).fetchall()
-        return [dict(r) for r in rows]
+        posts = [dict(r) for r in rows]
+
+    for post in posts:
+        snapshot = get_snapshot_at_horizon(post["feed_item_id"])
+        post["latest_views"] = snapshot["views"] if snapshot else None
+        post["latest_subs"] = snapshot["subscribers_at"] if snapshot else None
+    return posts
 
 
 def compute_statistical_baseline(posts: list[dict], slot: str | None = None) -> dict:
