@@ -8,11 +8,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import pytest
 
+from aibp.growth import competitor_monitor
 from aibp.growth.competitor_monitor import (
+    TGStatAuthError,
     build_recommendation,
     build_report,
     compute_daily_deltas,
     detect_churn_anomaly,
+    fetch_competitor_stats,
     get_subscriber_series,
 )
 from aibp.self_learning import db as sl_db
@@ -135,3 +138,114 @@ def test_report_includes_anomaly_and_recommendations():
     assert "Аномалия" in report
     assert "@chan" in report
     assert "2500" in report
+
+
+def test_report_surfaces_tgstat_error():
+    report = build_report([], None, [], None, tgstat_status="токен невалиден")
+    assert "TGStat недоступен" in report
+    assert "токен невалиден" in report
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TGStat auth-error detection (issue #25)
+# ═══════════════════════════════════════════════════════════════════
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def test_fetch_raises_on_token_error():
+    payload = {"status": "error", "error": "token is invalid"}
+    with patch.object(competitor_monitor.httpx, "get", return_value=_FakeResp(payload)):
+        with pytest.raises(TGStatAuthError):
+            fetch_competitor_stats("chan", "BADTOKEN")
+
+
+def test_fetch_raises_on_subscription_expired():
+    payload = {"status": "error", "error": "subscription expired"}
+    with patch.object(competitor_monitor.httpx, "get", return_value=_FakeResp(payload)):
+        with pytest.raises(TGStatAuthError):
+            fetch_competitor_stats("chan", "TOKEN")
+
+
+def test_fetch_returns_none_on_transient_error():
+    """A non-auth error (e.g. unknown channel) is not an auth failure."""
+    payload = {"status": "error", "error": "channel not found"}
+    with patch.object(competitor_monitor.httpx, "get", return_value=_FakeResp(payload)):
+        assert fetch_competitor_stats("chan", "TOKEN") is None
+
+
+def test_fetch_returns_stats_on_ok():
+    payload = {"status": "ok", "response": {"participants_count": 100, "avg_post_reach": 40,
+                                            "er_percent": 12.0, "daily_reach": 30}}
+    with patch.object(competitor_monitor.httpx, "get", return_value=_FakeResp(payload)):
+        stats = fetch_competitor_stats("chan", "TOKEN")
+    assert stats["subscribers"] == 100
+    assert stats["avg_post_reach"] == 40
+
+
+# ═══════════════════════════════════════════════════════════════════
+# run(): alert + event + circuit breaker (issue #25)
+# ═══════════════════════════════════════════════════════════════════
+
+@pytest.fixture()
+def growth_env(temp_db, tmp_path, monkeypatch):
+    """Temp SQLite + competitors configured + token set + reports to tmp."""
+    monkeypatch.setenv("TGSTAT_API_TOKEN", "TOKEN")
+    monkeypatch.setattr(competitor_monitor, "REPORTS_DIR", tmp_path / "growth")
+    monkeypatch.setattr(competitor_monitor, "load_growth_config",
+                        lambda: {"subscriber_value_rub": 50, "assumed_conversion_pct": 1.0,
+                                 "channels": [{"username": "chan"}]})
+    monkeypatch.setattr(competitor_monitor, "get_subscriber_series", lambda days=30: [])
+    monkeypatch.setattr(competitor_monitor, "get_our_er_percent", lambda: None)
+    yield
+
+
+def _count_events(event_type: str) -> int:
+    with sl_db.sqlite_conn() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) AS n FROM autopilot_events WHERE event_type = ?",
+            (event_type,),
+        ).fetchone()["n"]
+
+
+def test_run_alerts_and_logs_event_on_token_error(growth_env):
+    def boom(username, token):
+        raise TGStatAuthError("token invalid")
+
+    with patch.object(competitor_monitor, "fetch_competitor_stats", boom), \
+         patch.object(competitor_monitor, "_send_alert") as alert:
+        competitor_monitor.run()
+
+    alert.assert_called_once()
+    assert _count_events("tgstat_token_expired") == 1
+
+
+def test_run_circuit_breaker_skips_after_repeated_failures(growth_env):
+    from aibp.self_learning.db import log_autopilot_event
+
+    # Three prior weekly auth failures within the window → breaker open
+    for _ in range(3):
+        log_autopilot_event("tgstat_token_expired", details={"error": "token invalid"})
+
+    with patch.object(competitor_monitor, "fetch_competitor_stats") as fetch, \
+         patch.object(competitor_monitor, "_send_alert") as alert:
+        competitor_monitor.run()
+
+    fetch.assert_not_called()   # breaker prevented any TGStat call
+    alert.assert_not_called()
+
+
+def test_run_logs_ok_event_on_success(growth_env):
+    ok_stats = {"username": "chan", "subscribers": 20000, "avg_post_reach": 5000,
+                "er_percent": 25.0, "daily_reach": 3000}
+    with patch.object(competitor_monitor, "fetch_competitor_stats", return_value=ok_stats), \
+         patch.object(competitor_monitor, "_send_alert"):
+        competitor_monitor.run()
+
+    assert _count_events("tgstat_ok") == 1
+    assert _count_events("tgstat_token_expired") == 0

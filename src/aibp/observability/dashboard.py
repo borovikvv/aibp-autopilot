@@ -121,6 +121,9 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
   <div class="paused">⚠️ ОТТОК {{ '%.1f'|format(growth.anomaly.delta_pct) }}% за {{ growth.anomaly.day }}
     ({{ growth.anomaly.delta }} подписчиков)</div>
   {% endif %}
+  {% if growth.tgstat_ok is false %}
+  <div class="paused">⚠️ TGStat: токен невалиден или подписка истекла — конкурентная аналитика недоступна</div>
+  {% endif %}
   {% if growth.deltas %}
   <div class="metric">
     <div class="metric-value">{{ growth.current }}</div>
@@ -389,7 +392,25 @@ def get_growth_stats() -> dict:
         "current": deltas[-1]["subscribers"] if deltas else None,
         "week_delta": sum(d["delta"] for d in week) if week else 0,
         "anomaly": detect_churn_anomaly(deltas, threshold_pct=threshold),
+        "tgstat_ok": _tgstat_healthy(),
     }
+
+
+def _tgstat_healthy() -> bool | None:
+    """Latest TGStat outcome for the dashboard (issue #25): False if the most
+    recent event is a token/subscription failure, True if a success, None if
+    TGStat has not run yet."""
+    with sqlite_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT event_type FROM autopilot_events
+            WHERE event_type IN ('tgstat_ok', 'tgstat_token_expired')
+            ORDER BY event_at DESC LIMIT 1
+            """
+        ).fetchone()
+    if row is None:
+        return None
+    return row["event_type"] == "tgstat_ok"
 
 
 def get_recent_events(limit: int = 20) -> list[dict]:

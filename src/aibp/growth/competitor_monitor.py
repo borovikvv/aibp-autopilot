@@ -21,8 +21,8 @@ import httpx
 import structlog
 import yaml
 
-from aibp.self_learning.db import sqlite_conn
-from aibp.utils.config import PROJECT_ROOT
+from aibp.self_learning.db import log_autopilot_event, sqlite_conn
+from aibp.utils.config import PROJECT_ROOT, get_settings
 
 log = structlog.get_logger()
 
@@ -30,6 +30,20 @@ REPORTS_DIR = PROJECT_ROOT / "reports" / "growth"
 COMPETITORS_PATH = PROJECT_ROOT / "config" / "competitors.yaml"
 
 TGSTAT_API = "https://api.tgstat.ru"
+TELEGRAM_API = "https://api.telegram.org"
+
+# Substrings in a TGStat error that mean the token/subscription is the problem
+# (not a transient error or an unknown channel). Case-insensitive.
+_AUTH_ERROR_HINTS = ("token", "subscription", "not paid", "expired", "forbidden", "unauthorized")
+
+# Circuit breaker: after this many weekly auth failures in the window below,
+# stop calling TGStat (still alert once) to save requests until it is fixed.
+_CIRCUIT_BREAKER_FAILURES = 3
+_CIRCUIT_BREAKER_WINDOW_DAYS = 21
+
+
+class TGStatAuthError(RuntimeError):
+    """TGStat token is invalid or the subscription has expired (issue #25)."""
 
 
 def load_growth_config() -> dict:
@@ -97,8 +111,18 @@ def detect_churn_anomaly(deltas: list[dict], threshold_pct: float = 5.0) -> dict
 # Competitor analytics (TGStat)
 # ═══════════════════════════════════════════════════════════════════
 
+def _is_auth_error(error_text: str) -> bool:
+    lowered = error_text.lower()
+    return any(hint in lowered for hint in _AUTH_ERROR_HINTS)
+
+
 def fetch_competitor_stats(username: str, token: str) -> dict | None:
-    """Fetch channel stats from TGStat. Returns None on any failure."""
+    """Fetch channel stats from TGStat.
+
+    Returns None for transient errors / unknown channels. Raises
+    TGStatAuthError when the token is invalid or the subscription expired, so
+    the caller can alert instead of failing silently (issue #25).
+    """
     try:
         resp = httpx.get(
             f"{TGSTAT_API}/channels/stat",
@@ -106,20 +130,53 @@ def fetch_competitor_stats(username: str, token: str) -> dict | None:
             timeout=30,
         )
         data = resp.json()
-        if data.get("status") != "ok":
-            log.warning("tgstat_error", channel=username, response=str(data)[:200])
-            return None
-        r = data.get("response", {})
-        return {
-            "username": username,
-            "subscribers": r.get("participants_count"),
-            "avg_post_reach": r.get("avg_post_reach"),
-            "er_percent": r.get("er_percent"),
-            "daily_reach": r.get("daily_reach"),
-        }
     except Exception as e:
         log.warning("tgstat_request_failed", channel=username, error=str(e))
         return None
+
+    if data.get("status") != "ok":
+        error_text = str(data.get("error") or data.get("message") or data)
+        if _is_auth_error(error_text):
+            raise TGStatAuthError(error_text[:200])
+        log.warning("tgstat_error", channel=username, response=str(data)[:200])
+        return None
+
+    r = data.get("response", {})
+    return {
+        "username": username,
+        "subscribers": r.get("participants_count"),
+        "avg_post_reach": r.get("avg_post_reach"),
+        "er_percent": r.get("er_percent"),
+        "daily_reach": r.get("daily_reach"),
+    }
+
+
+def _send_alert(message: str) -> None:
+    """Best-effort Telegram alert to the owner (never raises)."""
+    s = get_settings()
+    if not s.telegram_bot_token or not s.telegram_alert_chat_id:
+        return
+    try:
+        httpx.post(
+            f"{TELEGRAM_API}/bot{s.telegram_bot_token}/sendMessage",
+            json={"chat_id": s.telegram_alert_chat_id,
+                  "text": f"⚠️ AIBP Growth Monitor\n\n{message}"},
+            timeout=10,
+        )
+    except Exception as e:
+        log.error("tgstat_alert_failed", error=str(e))
+
+
+def _recent_auth_failures(days: int = _CIRCUIT_BREAKER_WINDOW_DAYS) -> int:
+    """Count tgstat_token_expired events in the window (circuit breaker input)."""
+    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    with sqlite_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM autopilot_events "
+            "WHERE event_type = 'tgstat_token_expired' AND event_at >= ?",
+            (since,),
+        ).fetchone()
+        return row["n"] if row else 0
 
 
 def build_recommendation(stats: dict, subscriber_value_rub: float,
@@ -183,7 +240,8 @@ def get_our_er_percent() -> float | None:
 
 
 def build_report(deltas: list[dict], anomaly: dict | None,
-                 recommendations: list[dict], our_er: float | None) -> str:
+                 recommendations: list[dict], our_er: float | None,
+                 tgstat_status: str | None = None) -> str:
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     lines = [f"# Growth report — {today}", ""]
 
@@ -206,6 +264,9 @@ def build_report(deltas: list[dict], anomaly: dict | None,
 
     lines.append("")
     lines.append("## Конкуренты и рекомендации по закупке")
+    if tgstat_status:
+        lines.append(f"⚠️ **TGStat недоступен**: {tgstat_status}")
+        lines.append("")
     if recommendations:
         for rec in recommendations:
             verdict = "✅ стоит рассмотреть" if rec["worth_buying"] else "❌ не стоит"
@@ -235,30 +296,54 @@ def run() -> int:
     our_er = get_our_er_percent()
 
     recommendations = []
+    tgstat_status: str | None = None
     token = os.getenv("TGSTAT_API_TOKEN", "")
     channels = cfg.get("channels") or []
-    if token and channels:
-        for ch in channels[:5]:
-            username = ch["username"] if isinstance(ch, dict) else str(ch)
-            stats = fetch_competitor_stats(username, token)
-            if stats:
-                recommendations.append(build_recommendation(
-                    stats,
-                    subscriber_value_rub=cfg["subscriber_value_rub"],
-                    assumed_conversion_pct=cfg["assumed_conversion_pct"],
-                    our_er_percent=our_er,
-                ))
-    elif channels and not token:
-        log.warning("tgstat_token_missing", hint="Set TGSTAT_API_TOKEN in .env")
 
-    report = build_report(deltas, anomaly, recommendations, our_er)
+    if channels and not token:
+        log.warning("tgstat_token_missing", hint="Set TGSTAT_API_TOKEN in .env")
+    elif token and channels and _recent_auth_failures() >= _CIRCUIT_BREAKER_FAILURES:
+        # Circuit breaker: TGStat has been failing auth for weeks — stop calling
+        # it (still surface the state), don't burn requests until it's fixed.
+        tgstat_status = (f"пропущено — {_CIRCUIT_BREAKER_FAILURES}+ подряд ошибок "
+                         f"авторизации за {_CIRCUIT_BREAKER_WINDOW_DAYS} дн. "
+                         "Проверь TGSTAT_API_TOKEN и подписку на tgstat.ru.")
+        log.warning("tgstat_circuit_open")
+    elif token and channels:
+        try:
+            for ch in channels[:5]:
+                username = ch["username"] if isinstance(ch, dict) else str(ch)
+                stats = fetch_competitor_stats(username, token)
+                if stats:
+                    recommendations.append(build_recommendation(
+                        stats,
+                        subscriber_value_rub=cfg["subscriber_value_rub"],
+                        assumed_conversion_pct=cfg["assumed_conversion_pct"],
+                        our_er_percent=our_er,
+                    ))
+        except TGStatAuthError as e:
+            # Invalid token / expired subscription — record, alert, and stop.
+            tgstat_status = f"токен невалиден или подписка истекла ({e})"
+            log_autopilot_event("tgstat_token_expired", details={"error": str(e)})
+            log.error("tgstat_token_expired", error=str(e))
+            _send_alert(
+                "TGStat API error — конкурентная аналитика недоступна.\n"
+                f"Ошибка: {e}\n"
+                "Проверь TGSTAT_API_TOKEN в .env и подписку на tgstat.ru."
+            )
+        else:
+            if recommendations:
+                log_autopilot_event("tgstat_ok", details={"channels": len(recommendations)})
+
+    report = build_report(deltas, anomaly, recommendations, our_er, tgstat_status)
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d")
     (REPORTS_DIR / f"growth_{stamp}.md").write_text(report, encoding="utf-8")
     (REPORTS_DIR / f"growth_{stamp}.json").write_text(
         json.dumps({"deltas": deltas, "anomaly": anomaly,
-                    "recommendations": recommendations, "our_er_percent": our_er},
+                    "recommendations": recommendations, "our_er_percent": our_er,
+                    "tgstat_status": tgstat_status},
                    indent=2, ensure_ascii=False, default=str),
         encoding="utf-8",
     )
