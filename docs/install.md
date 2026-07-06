@@ -205,6 +205,34 @@ approval gate становится единственным потребител
 построению (не только по времени, но и по данным: разрушающий сдвиг offset
 approval-поллера больше не «съедает» `channel_post`-апдейты коллектора).
 
+### Шаг 9: Запуск redirect service (click-tracking)
+
+Redirect service (`aibp.tracking.redirect_service`) — **единственный
+постоянно работающий процесс** (не cron): `/r/{short_id} → 302` с логированием
+кликов. Если он не запущен — все tracked-ссылки в постах перестают работать.
+Нужно задать `TRACKING_BASE_URL` в `.env` (иначе генерация не подставляет
+короткие ссылки — см. issue #15).
+
+Выбери один вариант (подробности — [`deploy/README.md`](../deploy/README.md)):
+
+```bash
+# Вариант A — systemd (bare-metal/VPS)
+sudo cp deploy/systemd/aibp-redirect.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now aibp-redirect
+systemctl status aibp-redirect
+curl -fsS http://localhost:${TRACKING_PORT:-8091}/healthz   # → ok
+
+# Вариант B — Docker Compose
+cd docker && docker compose up -d redirect
+```
+
+Плюс health-check cron (алерт после 3 сбоев подряд):
+
+```cron
+*/5 * * * * cd /root/aibp-autopilot && python3 -m aibp.tracking.healthcheck >> reports/logs/cron.log 2>&1
+```
+
 ---
 
 ## Что делать если что-то сломалось

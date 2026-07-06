@@ -105,7 +105,7 @@ Check the test channel — there should be a new post. If yes, deployment is suc
 
 ### Step 5: Register Hermes cron jobs
 
-Register these 16 cron jobs in Hermes. Run each `cronjob(action='create', ...)` call:
+Register these 17 cron jobs in Hermes. Run each `cronjob(action='create', ...)` call:
 
 ```python
 # RSS Collector — every hour
@@ -291,7 +291,42 @@ cronjob(
     deliver='origin',
     enabled_toolsets=['terminal'],
 )
+
+# Redirect Health Check — every 5 minutes; alerts after 3 consecutive failures
+# (issue #21). Monitors the redirect DAEMON registered in Step 5.5 below.
+cronjob(
+    action='create',
+    name='AIBP — Redirect Health Check',
+    schedule='*/5 * * * *',
+    prompt='cd /root/aibp-autopilot && python3 -m aibp.tracking.healthcheck 2>&1',
+    workdir='/root/aibp-autopilot',
+    deliver='origin',
+    enabled_toolsets=['terminal'],
+)
 ```
+
+### Step 5.5: Register the redirect service (persistent daemon, NOT cron)
+
+The click-tracking redirect service (`aibp.tracking.redirect_service`) is a
+long-running process, so it is **not** a cron job — it must run 24/7 and
+restart on reboot. Requires `TRACKING_BASE_URL` in `.env`. Register it as a
+systemd unit (preferred on a VPS):
+
+```bash
+terminal('sudo cp /root/aibp-autopilot/deploy/systemd/aibp-redirect.service /etc/systemd/system/ '
+         '&& sudo systemctl daemon-reload && sudo systemctl enable --now aibp-redirect '
+         '&& systemctl is-active aibp-redirect')
+```
+
+Then confirm health:
+
+```bash
+terminal('curl -fsS http://localhost:${TRACKING_PORT:-8091}/healthz')   # → ok
+```
+
+If the deployment is Docker-based instead, run `docker compose up -d redirect`
+from `docker/` (service defined in `docker/docker-compose.yml`). See
+`deploy/README.md` for both paths.
 
 ### Step 6: Final verification
 

@@ -45,5 +45,32 @@ services:
       - /srv/static/aibp:/srv/static/aibp
     command: python3 -m aibp.cli smoke-test
 
+  # Click-tracking redirect service (issue #21). Unlike the cron jobs this is a
+  # long-running daemon (/r/{short_id} → 302), so it must stay up 24/7 or all
+  # tracked links break. restart:unless-stopped + healthcheck cover crashes and
+  # host reboots.
+  redirect:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: aibp-redirect
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://aibp:${POSTGRES_PASSWORD:-aibp}@postgres:5432/aibp
+      TRACKING_BASE_URL: ${TRACKING_BASE_URL}
+      TRACKING_PORT: ${TRACKING_PORT:-8091}
+      APP_ENV: production
+    ports:
+      - "${TRACKING_PORT:-8091}:${TRACKING_PORT:-8091}"
+    command: python3 -m aibp.tracking.redirect_service
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:%s/healthz' % os.getenv('TRACKING_PORT','8091')).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
 volumes:
   pgdata:

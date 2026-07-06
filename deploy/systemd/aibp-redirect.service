@@ -1,0 +1,22 @@
+[Unit]
+# Click-tracking redirect service (issue #21) — the only long-running daemon
+# in AIBP. Everything else is cron. If this is down, all tracked links break.
+Description=AIBP Autopilot — click-tracking redirect service
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+# Change User to whoever owns the checkout if not running as root.
+User=root
+WorkingDirectory=/root/aibp-autopilot
+EnvironmentFile=/root/aibp-autopilot/.env
+ExecStart=/usr/bin/python3 -m aibp.tracking.redirect_service
+Restart=on-failure
+RestartSec=5
+# Log to a file instead of the journal/stdout.
+StandardOutput=append:/root/aibp-autopilot/reports/logs/redirect.log
+StandardError=append:/root/aibp-autopilot/reports/logs/redirect.log
+
+[Install]
+WantedBy=multi-user.target
