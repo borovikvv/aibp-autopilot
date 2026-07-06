@@ -4,15 +4,13 @@ Daily cron: writes static HTML to dashboard_output_path.
 """
 from __future__ import annotations
 
-import json
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from jinja2 import Template
 
-from aibp.self_learning.db import sqlite_conn, get_snapshot_at_horizon
-from aibp.utils.config import PROJECT_ROOT, get_settings, load_policy
+from aibp.self_learning.db import get_snapshot_at_horizon, sqlite_conn
+from aibp.utils.config import get_settings, load_policy
 
 log = structlog.get_logger()
 
@@ -226,7 +224,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 
 def get_metrics() -> dict:
     """Get summary metrics for dashboard."""
-    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    week_ago = (datetime.now(UTC) - timedelta(days=7)).isoformat()
     with sqlite_conn() as conn:
         # Total posts
         row = conn.execute(
@@ -313,7 +311,7 @@ def get_ctr_stats(days: int = 30) -> dict:
 
     clicks_by_item = {r["feed_item_id"]: r["clicks"] for r in click_rows}
 
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     with sqlite_conn() as conn:
         rows = conn.execute(
             """

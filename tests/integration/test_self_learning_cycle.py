@@ -12,7 +12,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -78,10 +78,10 @@ def test_experiment_lifecycle_promote(temp_sqlite_db, temp_policy):
     Simulates an experiment where shadow policy is better than control.
     """
     from aibp.self_learning import db as sl_db
-    from aibp.self_learning.policy_updater import create_experiment
-    from aibp.self_learning.shadow_runner import start_shadow
     from aibp.self_learning.decision_engine import make_decision
+    from aibp.self_learning.policy_updater import create_experiment
     from aibp.self_learning.safety import is_autopilot_paused
+    from aibp.self_learning.shadow_runner import start_shadow
 
     # Verify autopilot is not paused at start
     assert not is_autopilot_paused()
@@ -142,7 +142,7 @@ def test_experiment_lifecycle_promote(temp_sqlite_db, temp_policy):
     control_version = temp_policy["version"]
     shadow_version = row["policy_after"]
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with sl_db.sqlite_conn() as conn:
         # Control posts (even days back)
         for i in range(10):
@@ -190,7 +190,7 @@ def test_experiment_lifecycle_promote(temp_sqlite_db, temp_policy):
     # Make experiment look 15 days old (past the 14-day window, ADR-0008),
     # so all simulated posts fall inside the experiment period.
     with sl_db.sqlite_conn() as conn:
-        old_started = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
+        old_started = (datetime.now(UTC) - timedelta(days=15)).isoformat()
         conn.execute(
             "UPDATE experiments_log SET started_at = ? WHERE id = ?",
             (old_started, exp_id),
@@ -213,8 +213,8 @@ def test_experiment_lifecycle_promote(temp_sqlite_db, temp_policy):
 def test_experiment_lifecycle_reject_insufficient_data(temp_sqlite_db, temp_policy):
     """Experiment with insufficient data after 14 days → reject."""
     from aibp.self_learning import db as sl_db
-    from aibp.self_learning.policy_updater import create_experiment
     from aibp.self_learning.decision_engine import make_decision
+    from aibp.self_learning.policy_updater import create_experiment
 
     # Create experiment
     hypothesis = {
@@ -234,7 +234,7 @@ def test_experiment_lifecycle_reject_insufficient_data(temp_sqlite_db, temp_poli
 
     # Make experiment 25 days old (past give-up point: window 14d + 7d grace)
     with sl_db.sqlite_conn() as conn:
-        old_started = (datetime.now(timezone.utc) - timedelta(days=25)).isoformat()
+        old_started = (datetime.now(UTC) - timedelta(days=25)).isoformat()
         conn.execute(
             "UPDATE experiments_log SET started_at = ?, status = 'shadow_running' WHERE id = ?",
             (old_started, exp_id),

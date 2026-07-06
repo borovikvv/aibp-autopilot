@@ -11,7 +11,7 @@ import structlog
 from scipy import stats as scipy_stats
 
 from aibp.enrichment.llm_client import OpenRouterClient
-from aibp.self_learning.db import sqlite_conn, get_snapshot_at_horizon
+from aibp.self_learning.db import get_snapshot_at_horizon, sqlite_conn
 from aibp.utils.config import PROJECT_ROOT, load_policy
 
 log = structlog.get_logger()
