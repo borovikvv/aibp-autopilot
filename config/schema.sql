@@ -89,6 +89,31 @@ CREATE TABLE IF NOT EXISTS rss_feeds (
     created_at  timestamptz DEFAULT now()
 );
 
+-- ─── Click tracking (monetization) ─────────────────────────────────
+-- Views don't convert to revenue — clicks do. Every external link in a post
+-- goes through the redirect service (/r/{short_id} → 302 target_url) which
+-- logs a row in link_clicks.
+CREATE TABLE IF NOT EXISTS tracked_links (
+    short_id     text PRIMARY KEY,          -- short slug used in /r/{short_id}
+    feed_item_id bigint REFERENCES feed_items(id),
+    target_url   text NOT NULL,
+    created_at   timestamptz DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tracked_links_item ON tracked_links (feed_item_id);
+
+CREATE TABLE IF NOT EXISTS link_clicks (
+    id           bigserial PRIMARY KEY,
+    feed_item_id bigint,
+    short_id     text NOT NULL REFERENCES tracked_links(short_id),
+    clicked_at   timestamptz NOT NULL DEFAULT now(),
+    target_url   text,
+    user_agent   text
+);
+
+CREATE INDEX IF NOT EXISTS idx_link_clicks_item ON link_clicks (feed_item_id, clicked_at);
+CREATE INDEX IF NOT EXISTS idx_link_clicks_short ON link_clicks (short_id);
+
 -- ─── Cron job execution log (observability) ───────────────────────
 CREATE TABLE IF NOT EXISTS cron_runs (
     id          bigserial PRIMARY KEY,

@@ -49,6 +49,10 @@ class Settings:
     dashboard_output_path: Path
     dashboard_base_url: str
 
+    # Click tracking (issue #15). Empty base URL disables link wrapping.
+    tracking_base_url: str
+    tracking_port: int
+
     @classmethod
     def from_env(cls) -> "Settings":
         load_dotenv(PROJECT_ROOT / ".env")
@@ -72,6 +76,8 @@ class Settings:
             rss_feeds_path=Path(os.getenv("RSS_FEEDS_PATH", "config/rss_feeds.yaml")),
             dashboard_output_path=Path(os.getenv("DASHBOARD_OUTPUT_PATH", "/srv/static/aibp/dashboard.html")),
             dashboard_base_url=os.getenv("DASHBOARD_BASE_URL", "https://cockpit.borovikvv.ru/aibp"),
+            tracking_base_url=os.getenv("TRACKING_BASE_URL", ""),
+            tracking_port=int(os.getenv("TRACKING_PORT", "8091")),
         )
 
 

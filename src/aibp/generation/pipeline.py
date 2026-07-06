@@ -12,10 +12,12 @@ from zoneinfo import ZoneInfo
 import structlog
 from jinja2 import Template
 
+import re
+
 from aibp.db.connection import fetch_all, fetch_one, execute, execute_returning
 from aibp.enrichment.llm_client import OpenRouterClient
 from aibp.generation.quality_gate import validate_post
-from aibp.utils.config import load_policy
+from aibp.utils.config import get_settings, load_policy
 from aibp.utils.summary import parse_summary
 
 log = structlog.get_logger()
@@ -241,6 +243,37 @@ def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterCl
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Click tracking (issue #15)
+# ═══════════════════════════════════════════════════════════════════
+
+_HREF_RE = re.compile(r'<a href="([^"]+)">')
+
+
+def wrap_tracked_links(post: str, feed_item_id: int) -> str:
+    """Replace direct external URLs in the post with tracked short redirects.
+
+    Runs AFTER the quality gate (which validates the original source URL).
+    No-op when TRACKING_BASE_URL is not configured or on registry errors —
+    a post with a direct link is better than no post.
+    """
+    if not get_settings().tracking_base_url:
+        return post
+
+    from aibp.tracking.redirect_service import register_link, short_url
+
+    def _sub(match: re.Match) -> str:
+        url = match.group(1)
+        try:
+            short_id = register_link(feed_item_id, url)
+            return f'<a href="{short_url(short_id)}">'
+        except Exception as e:
+            log.warning("link_tracking_failed", feed_item_id=feed_item_id, url=url, error=str(e))
+            return match.group(0)
+
+    return _HREF_RE.sub(_sub, post)
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Main entry point
 # ═══════════════════════════════════════════════════════════════════
 
@@ -380,7 +413,8 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
             scheduled=scheduled.isoformat(),
         )
     else:
-        # Prod: UPDATE candidate row in place (existing behavior)
+        # Prod: wrap source links into tracked redirects, then UPDATE in place
+        post = wrap_tracked_links(post, candidate["id"])
         execute(
             """
             UPDATE feed_items

@@ -11,7 +11,7 @@ from pathlib import Path
 import structlog
 from jinja2 import Template
 
-from aibp.self_learning.db import sqlite_conn
+from aibp.self_learning.db import sqlite_conn, get_snapshot_at_horizon
 from aibp.utils.config import PROJECT_ROOT, get_settings, load_policy
 
 log = structlog.get_logger()
@@ -118,6 +118,42 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
   <p>No finished experiments yet.</p>
   {% endif %}
 
+  <h2>CTR — clicks / views at 48h (last 30 days)</h2>
+  {% if ctr.posts %}
+  <table>
+    <tr>
+      <th>Post</th><th>Slot</th><th>Policy</th><th>Views (48h)</th><th>Clicks</th><th>CTR</th>
+    </tr>
+    {% for p in ctr.posts %}
+    <tr>
+      <td>{{ p.feed_item_id }}</td>
+      <td>{{ p.slot }}</td>
+      <td><code>{{ p.policy_version[:12] }}</code></td>
+      <td>{{ p.views if p.views is not none else '—' }}</td>
+      <td>{{ p.clicks }}</td>
+      <td>{{ '%.2f%%'|format(p.ctr * 100) if p.ctr is not none else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% if ctr.by_policy %}
+  <h3>CTR by policy version</h3>
+  <table>
+    <tr><th>Policy</th><th>Posts</th><th>Views (48h)</th><th>Clicks</th><th>CTR</th></tr>
+    {% for row in ctr.by_policy %}
+    <tr>
+      <td><code>{{ row.policy_version[:12] }}</code></td>
+      <td>{{ row.n_posts }}</td>
+      <td>{{ row.views }}</td>
+      <td>{{ row.clicks }}</td>
+      <td>{{ '%.2f%%'|format(row.ctr * 100) if row.ctr is not none else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% else %}
+  <p>No click data yet (tracking disabled or no clicks recorded).</p>
+  {% endif %}
+
   <h2>Recent Autopilot Events</h2>
   {% if recent_events %}
   <table>
@@ -217,6 +253,62 @@ def get_recent_decisions(limit: int = 10) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_ctr_stats(days: int = 30) -> dict:
+    """CTR per post and per policy version: clicks (PostgreSQL) over views
+    at the 48h horizon (SQLite). Degrades to empty when PG is unreachable
+    or click tracking is not deployed."""
+    try:
+        from aibp.db.connection import fetch_all as pg_fetch_all
+        click_rows = pg_fetch_all(
+            "SELECT feed_item_id, COUNT(*) AS clicks FROM link_clicks GROUP BY feed_item_id"
+        )
+    except Exception as e:
+        log.warning("ctr_stats_unavailable", error=str(e))
+        return {"posts": [], "by_policy": []}
+
+    clicks_by_item = {r["feed_item_id"]: r["clicks"] for r in click_rows}
+
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with sqlite_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT feed_item_id, slot, policy_version
+            FROM post_features
+            WHERE posted_at >= ? AND target_channel = 'main'
+            ORDER BY posted_at DESC
+            """,
+            (since,),
+        ).fetchall()
+
+    posts = []
+    for r in rows:
+        snapshot = get_snapshot_at_horizon(r["feed_item_id"])
+        views = snapshot["views"] if snapshot else None
+        clicks = clicks_by_item.get(r["feed_item_id"], 0)
+        posts.append({
+            "feed_item_id": r["feed_item_id"],
+            "slot": r["slot"],
+            "policy_version": r["policy_version"] or "",
+            "views": views,
+            "clicks": clicks,
+            "ctr": (clicks / views) if views else None,
+        })
+
+    by_policy: dict[str, dict] = {}
+    for p in posts:
+        agg = by_policy.setdefault(
+            p["policy_version"], {"policy_version": p["policy_version"],
+                                  "n_posts": 0, "views": 0, "clicks": 0}
+        )
+        agg["n_posts"] += 1
+        agg["views"] += p["views"] or 0
+        agg["clicks"] += p["clicks"]
+    for agg in by_policy.values():
+        agg["ctr"] = (agg["clicks"] / agg["views"]) if agg["views"] else None
+
+    return {"posts": posts[:15], "by_policy": list(by_policy.values())}
+
+
 def get_recent_events(limit: int = 20) -> list[dict]:
     with sqlite_conn() as conn:
         rows = conn.execute(
@@ -242,6 +334,7 @@ def run() -> int:
         active_experiments=get_active_experiments(),
         recent_decisions=get_recent_decisions(),
         recent_events=get_recent_events(),
+        ctr=get_ctr_stats(),
         generated_at=datetime.now().isoformat(timespec="seconds"),
     )
 

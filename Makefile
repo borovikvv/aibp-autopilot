@@ -131,6 +131,10 @@ safety-check:
 dashboard:
         $(PYTHON) -m aibp.cli dashboard
 
+# Click-tracking redirect service (long-lived, run under systemd/docker)
+run-redirect:
+        $(PYTHON) -m aibp.tracking.redirect_service
+
 resume-autopilot:
         $(PYTHON) -m aibp.cli resume-autopilot
 
