@@ -95,6 +95,29 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
   <p>No active experiments.</p>
   {% endif %}
 
+  <h2>Bandit State (Thompson sampling)</h2>
+  {% if bandit_state %}
+  <table>
+    <tr>
+      <th>Dimension</th><th>Arm</th><th>α</th><th>β</th><th>E[θ]</th>
+      <th>Observations</th><th>Multiplier</th>
+    </tr>
+    {% for arm in bandit_state %}
+    <tr>
+      <td>{{ arm.dimension }}</td>
+      <td>{{ arm.arm_id }}</td>
+      <td>{{ '%.1f'|format(arm.alpha) }}</td>
+      <td>{{ '%.1f'|format(arm.beta) }}</td>
+      <td>{{ '%.2f'|format(arm.e_theta) }}</td>
+      <td>{{ arm.observations }}</td>
+      <td{% if arm.significant %} class="status-running"{% endif %}>×{{ '%.2f'|format(arm.multiplier) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p>No bandit data yet (no posts scored against the trailing median).</p>
+  {% endif %}
+
   <h2>Recent Decisions (last 10)</h2>
   {% if recent_decisions %}
   <table>
@@ -284,6 +307,41 @@ def get_active_experiments() -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_bandit_state() -> list[dict]:
+    """Thompson-sampling posteriors for the dashboard (issue #23).
+
+    The bandit and experiments_log are parallel loops, so bandit drift is
+    invisible on the experiments tables — this surfaces it. Mirrors the math
+    in aibp.self_learning.bandit: E[θ] = α/(α+β), multiplier = 0.5 + E[θ],
+    observations = α + β − 2 (the Beta(1,1) prior contributes 2)."""
+    with sqlite_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT dimension, arm_id, alpha, beta, updated_at
+            FROM bandit_arms
+            ORDER BY dimension, (alpha * 1.0 / (alpha + beta)) DESC
+            """
+        ).fetchall()
+
+    state = []
+    for r in rows:
+        alpha, beta = r["alpha"], r["beta"]
+        e_theta = alpha / (alpha + beta) if (alpha + beta) else 0.0
+        multiplier = 0.5 + e_theta
+        state.append({
+            "dimension": r["dimension"],
+            "arm_id": r["arm_id"],
+            "alpha": alpha,
+            "beta": beta,
+            "e_theta": e_theta,
+            "observations": int(round(alpha + beta - 2)),
+            "multiplier": multiplier,
+            # Highlight a meaningful drift from the neutral 1.0 baseline.
+            "significant": multiplier > 1.3 or multiplier < 0.7,
+        })
+    return state
+
+
 def get_recent_decisions(limit: int = 10) -> list[dict]:
     with sqlite_conn() as conn:
         rows = conn.execute(
@@ -436,6 +494,7 @@ def run() -> int:
         policy=policy,
         metrics=get_metrics(),
         active_experiments=get_active_experiments(),
+        bandit_state=get_bandit_state(),
         recent_decisions=get_recent_decisions(),
         recent_events=get_recent_events(),
         ctr=get_ctr_stats(),
