@@ -26,6 +26,7 @@ import structlog
 
 from aibp.db.connection import fetch_all
 from aibp.self_learning.db import sqlite_conn
+from aibp.self_learning.telegram_lock import getupdates_lock
 from aibp.utils.config import get_settings
 from aibp.utils.summary import parse_summary
 
@@ -222,15 +223,21 @@ async def get_views_via_updates(
       - May return 409 Conflict if a webhook is set or another process uses getUpdates
       - Older posts are silently skipped (returns None)
     """
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            data = await _tg_call(client, bot_token, "getUpdates", {
-                "offset": -100,
-                "allowed_updates": "channel_post",
-            })
-    except httpx.HTTPError as e:
-        log.error("get_updates_http_error", error=str(e))
-        return None
+    # Serialize against the approval-gate poller so the two never hit
+    # getUpdates concurrently (issue #24). A busy lock → skip this run.
+    with getupdates_lock() as acquired:
+        if not acquired:
+            log.info("get_updates_skipped_locked", message_id=str(message_id))
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                data = await _tg_call(client, bot_token, "getUpdates", {
+                    "offset": -100,
+                    "allowed_updates": "channel_post",
+                })
+        except httpx.HTTPError as e:
+            log.error("get_updates_http_error", error=str(e))
+            return None
 
     if not data.get("ok"):
         error_code = data.get("error_code")

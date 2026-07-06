@@ -105,7 +105,7 @@ Check the test channel — there should be a new post. If yes, deployment is suc
 
 ### Step 5: Register Hermes cron jobs
 
-Register these 15 cron jobs in Hermes. Run each `cronjob(action='create', ...)` call:
+Register these 16 cron jobs in Hermes. Run each `cronjob(action='create', ...)` call:
 
 ```python
 # RSS Collector — every hour
@@ -187,6 +187,11 @@ cronjob(
 )
 
 # Engagement Collector — every 4 hours
+# NOTE (issue #24): the collector uses getUpdates ONLY as a fallback when
+# TELEGRAM_METRICS_CHAT_ID is unset. getUpdates is exclusive per bot, so it
+# shares a cross-process lock with the Approval Gate job below (never a 409
+# from concurrency). Set TELEGRAM_METRICS_CHAT_ID so the collector uses
+# copyMessage and the Approval Gate owns getUpdates exclusively.
 cronjob(
     action='create',
     name='AIBP — Engagement Collector',
@@ -269,6 +274,19 @@ cronjob(
     name='AIBP — Dashboard',
     schedule='0 3 * * *',
     prompt='cd /root/aibp-autopilot && python3 -m aibp.cli dashboard 2>&1',
+    workdir='/root/aibp-autopilot',
+    deliver='origin',
+    enabled_toolsets=['terminal'],
+)
+
+# Approval Gate — every 5 minutes, offset by 2 min so it never starts at :00
+# together with the Engagement Collector (issue #24). Processes approve/reject
+# button taps for high-risk experiments; shares the getUpdates lock.
+cronjob(
+    action='create',
+    name='AIBP — Approval Gate',
+    schedule='2-59/5 * * * *',
+    prompt='cd /root/aibp-autopilot && python3 -m aibp.self_learning.approvals 2>&1',
     workdir='/root/aibp-autopilot',
     deliver='origin',
     enabled_toolsets=['terminal'],

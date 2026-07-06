@@ -9,20 +9,25 @@ approve/reject inline buttons goes to the alert chat.
     python -m aibp.self_learning.approvals            # process button taps
     python -m aibp.self_learning.approvals --remind   # re-send pending requests
 
-Callback polling uses getUpdates limited to callback_query. Note: getUpdates
-is exclusive per bot — run this from the same scheduler cadence as the
-engagement collector's getUpdates fallback, never concurrently.
+Callback polling uses getUpdates limited to callback_query. getUpdates is
+exclusive per bot, so this poller and the engagement collector's getUpdates
+fallback share a cross-process lock (aibp.self_learning.telegram_lock) and can
+never run it concurrently (issue #24). A 409 that slips through anyway is
+alerted, not silent. Setting TELEGRAM_METRICS_CHAT_ID makes the collector use
+copyMessage so this poller owns getUpdates exclusively.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import UTC
 
 import httpx
 import structlog
 
 from aibp.self_learning.db import log_autopilot_event, sqlite_conn
+from aibp.self_learning.telegram_lock import getupdates_lock
 from aibp.utils.config import get_settings
 
 log = structlog.get_logger()
@@ -31,6 +36,24 @@ TELEGRAM_API = "https://api.telegram.org"
 
 APPROVE_PREFIX = "exp_approve"
 REJECT_PREFIX = "exp_reject"
+
+
+class GetUpdatesConflictError(RuntimeError):
+    """Telegram returned 409 — another getUpdates consumer is active (issue #24)."""
+
+
+async def _send_alert(bot_token: str, alert_chat_id: str, message: str) -> None:
+    """Best-effort alert to the owner chat (never raises)."""
+    if not alert_chat_id:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"{TELEGRAM_API}/bot{bot_token}/sendMessage",
+                json={"chat_id": alert_chat_id, "text": f"⚠️ AIBP Approval Gate\n\n{message}"},
+            )
+    except Exception as e:
+        log.error("approval_alert_failed", error=str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -153,7 +176,12 @@ async def _get_updates(bot_token: str, offset: int | None = None) -> list[dict]:
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(f"{TELEGRAM_API}/bot{bot_token}/getUpdates", params=params)
         data = resp.json()
-        return data.get("result", []) if data.get("ok") else []
+    if data.get("ok"):
+        return data.get("result", [])
+    if data.get("error_code") == 409:
+        raise GetUpdatesConflictError(data.get("description", "conflict"))
+    log.warning("approvals_get_updates_failed", response=str(data)[:200])
+    return []
 
 
 async def _answer_callback(bot_token: str, callback_id: str, text: str) -> None:
@@ -165,32 +193,67 @@ async def _answer_callback(bot_token: str, callback_id: str, text: str) -> None:
 
 
 async def process_callbacks_async() -> int:
-    """Poll pending callback queries and act on them. Returns actions taken."""
+    """Poll pending callback queries and act on them. Returns actions taken.
+
+    Serialized against the engagement collector's getUpdates fallback via a
+    cross-process lock (issue #24). If the lock is held or Telegram returns
+    409, this run is skipped/alerted and retried on the next cron tick.
+    """
     s = get_settings()
     if not s.telegram_bot_token:
         log.error("no_bot_token")
         return 0
 
-    updates = await _get_updates(s.telegram_bot_token)
-    processed = 0
-    max_update_id = None
+    if not os.getenv("TELEGRAM_METRICS_CHAT_ID"):
+        # Both this poller and the collector's getUpdates fallback are active;
+        # the lock prevents a 409 race, but copyMessage removes the risk entirely.
+        log.warning(
+            "approvals_may_conflict_with_engagement_collector",
+            hint="Set TELEGRAM_METRICS_CHAT_ID so the engagement collector uses "
+                 "copyMessage and the approval poller owns getUpdates exclusively.",
+        )
 
-    for update in updates:
-        max_update_id = update["update_id"]
-        callback = update.get("callback_query")
-        if not callback:
-            continue
-        outcome = handle_callback(callback.get("data", ""))
-        if outcome != "ignored":
-            processed += 1
-        answer = {"approved": "✅ Применено к прод-политике",
-                  "rejected": "❌ Эксперимент отклонён",
-                  "ignored": "Уже обработано или неактуально"}[outcome]
-        await _answer_callback(s.telegram_bot_token, callback["id"], answer)
+    with getupdates_lock() as acquired:
+        if not acquired:
+            log.info("approvals_skipped_getupdates_locked")
+            return 0
 
-    # Acknowledge processed updates so they are not re-delivered
-    if max_update_id is not None:
-        await _get_updates(s.telegram_bot_token, offset=max_update_id + 1)
+        try:
+            updates = await _get_updates(s.telegram_bot_token)
+        except GetUpdatesConflictError as e:
+            log.error("approvals_getupdates_conflict", error=str(e))
+            await _send_alert(
+                s.telegram_bot_token, s.telegram_alert_chat_id,
+                "getUpdates 409 Conflict — approvals not processed this run.\n"
+                "Another process (engagement collector fallback or a webhook) is "
+                "polling getUpdates.\n"
+                "Fix: set TELEGRAM_METRICS_CHAT_ID so the collector uses copyMessage.\n"
+                f"Error: {e}",
+            )
+            return 0
+
+        processed = 0
+        max_update_id = None
+
+        for update in updates:
+            max_update_id = update["update_id"]
+            callback = update.get("callback_query")
+            if not callback:
+                continue
+            outcome = handle_callback(callback.get("data", ""))
+            if outcome != "ignored":
+                processed += 1
+            answer = {"approved": "✅ Применено к прод-политике",
+                      "rejected": "❌ Эксперимент отклонён",
+                      "ignored": "Уже обработано или неактуально"}[outcome]
+            await _answer_callback(s.telegram_bot_token, callback["id"], answer)
+
+        # Acknowledge processed updates so they are not re-delivered
+        if max_update_id is not None:
+            try:
+                await _get_updates(s.telegram_bot_token, offset=max_update_id + 1)
+            except GetUpdatesConflictError:
+                pass
 
     if processed:
         log.info("approval_callbacks_processed", count=processed)
