@@ -89,6 +89,11 @@ def load_policy(path: Path | None = None, pipeline_env: str = "prod") -> dict[st
         path: Explicit path to policy file. If None, auto-detect by pipeline_env.
         pipeline_env: "prod" → config/policy.yaml, "stage" → config/policy.stage.yaml
                       (falls back to config/policy.yaml if stage file missing).
+
+    Note (ADR-0007 / issue #22): `policy.stage.yaml` is the PREVIEW policy for
+    the test channel (human QA) — NOT the interleave variant that drives
+    statistics. The variant is loaded from SQLite by
+    `self_learning.interleave.resolve_policy_for_today`, not here.
     """
     if path is not None:
         with open(path, encoding="utf-8") as f:

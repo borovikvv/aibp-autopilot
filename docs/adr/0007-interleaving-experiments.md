@@ -41,6 +41,30 @@ engagement rate между каналами отражает разницу ау
    контроля качества генерации под новой политикой, но его engagement-данные
    исключены из статистических решений.
 
+## Две «политики», которые НЕЛЬЗЯ путать (issue #22)
+
+После этого ADR в проекте есть два разных объекта, оба исторически звались
+«shadow policy». Это разные вещи с разным назначением:
+
+| | **Preview policy** | **Interleave variant** |
+|---|---|---|
+| Файл/источник | `config/policy.stage.yaml` (генерируемый) | SQLite `policies`, версия `policy_after` |
+| Пишет | `shadow_runner.apply_policy_to_stage()` | `policy_updater.create_experiment()` |
+| Читает | `generation/pipeline` при `pipeline_env='stage'` | `self_learning/interleave.resolve_policy_for_today()` |
+| Канал | `test` (превью) | `main` (прод, нечётные дни) |
+| Назначение | **визуальный QA для человека** | **статистический тест** |
+| Влияет на решения | ❌ нет | ✅ да |
+
+Правило: `policy.stage.yaml` — это **preview для человека**, а не вариант
+эксперимента. Статистику определяет только interleave-variant из SQLite.
+
+Про rename: переименование значения `pipeline_env='stage' → 'preview'` (как
+предлагалось в issue #22) сознательно **не** сделано — это значение
+персистится в `feed_items.pipeline_env`, зашито в `schema.sql`, миграции и
+`select_candidate`; массовый rename ради нейминга потребовал бы миграции
+данных и дал бы churn без функционального выигрыша. Устранение путаницы
+достигается этой таблицей и комментариями в коде.
+
 ## Последствия
 
 - Все посты канала `main` во время эксперимента несут в `post_features.policy_version`

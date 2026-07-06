@@ -39,7 +39,12 @@ def get_draft_experiments() -> list[dict]:
 
 
 def get_shadow_policy(policy_version: str) -> dict | None:
-    """Load policy dict by version from SQLite."""
+    """Load the experiment VARIANT policy dict by version from SQLite.
+
+    Despite the legacy "shadow" name, this is the interleave variant (drives
+    statistics), not the preview policy written to config/policy.stage.yaml
+    (see ADR-0007 / issue #22).
+    """
     with sqlite_conn() as conn:
         row = conn.execute(
             "SELECT json_blob FROM policies WHERE version = ?",
@@ -51,10 +56,14 @@ def get_shadow_policy(policy_version: str) -> dict | None:
 
 
 def apply_policy_to_stage(policy: dict) -> None:
-    """Apply policy to stage environment (test channel).
+    """Write the PREVIEW policy for the test channel (human QA), not the
+    interleave variant used for statistics.
 
-    For MVP: we apply by writing a stage-specific policy.yaml.stage
-    that the generation pipeline reads when pipeline_env='stage'.
+    ADR-0007: `config/policy.stage.yaml` is a preview so a human can eyeball
+    generation under the new policy in the `test` channel. It does NOT drive
+    any promote/reject decision. The statistical VARIANT lives in SQLite
+    `policies` (loaded by `self_learning.interleave.resolve_policy_for_today`)
+    and runs in the `main` channel on odd days. Do not confuse the two.
     """
     stage_path = PROJECT_ROOT / "config" / "policy.stage.yaml"
     with open(stage_path, "w", encoding="utf-8") as f:
