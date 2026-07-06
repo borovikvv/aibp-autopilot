@@ -131,6 +131,10 @@ safety-check:
 dashboard:
         $(PYTHON) -m aibp.cli dashboard
 
+# Weekly growth report (subscribers + competitors via TGStat)
+growth-report:
+        $(PYTHON) -m aibp.growth.competitor_monitor
+
 # Click-tracking redirect service (long-lived, run under systemd/docker)
 run-redirect:
         $(PYTHON) -m aibp.tracking.redirect_service

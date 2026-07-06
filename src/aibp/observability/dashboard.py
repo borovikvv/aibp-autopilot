@@ -118,6 +118,35 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
   <p>No finished experiments yet.</p>
   {% endif %}
 
+  <h2>Growth — subscribers (last 14 days)</h2>
+  {% if growth.anomaly %}
+  <div class="paused">⚠️ ОТТОК {{ '%.1f'|format(growth.anomaly.delta_pct) }}% за {{ growth.anomaly.day }}
+    ({{ growth.anomaly.delta }} подписчиков)</div>
+  {% endif %}
+  {% if growth.deltas %}
+  <div class="metric">
+    <div class="metric-value">{{ growth.current }}</div>
+    <div class="metric-label">Subscribers now</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">{{ '%+d'|format(growth.week_delta) }}</div>
+    <div class="metric-label">Delta (7d)</div>
+  </div>
+  <table>
+    <tr><th>Day</th><th>Subscribers</th><th>Δ</th><th>Δ%</th></tr>
+    {% for d in growth.deltas[-14:] %}
+    <tr>
+      <td>{{ d.day }}</td>
+      <td>{{ d.subscribers }}</td>
+      <td>{{ '%+d'|format(d.delta) if d.delta is not none else '—' }}</td>
+      <td>{{ '%+.2f%%'|format(d.delta_pct) if d.delta_pct is not none else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p>No subscriber snapshots yet.</p>
+  {% endif %}
+
   <h2>CTR — clicks / views at 48h (last 30 days)</h2>
   {% if ctr.posts %}
   <table>
@@ -342,6 +371,29 @@ def get_ctr_stats(days: int = 30) -> dict:
     }
 
 
+def get_growth_stats() -> dict:
+    """Subscriber dynamics for the Growth section. The 5%/24h churn threshold
+    already existed in policy.safety — it just was never visualized."""
+    from aibp.growth.competitor_monitor import (
+        compute_daily_deltas,
+        detect_churn_anomaly,
+        get_subscriber_series,
+    )
+
+    policy = load_policy()
+    threshold = policy.get("safety", {}).get("subscribers_drop_24h_pct", 5)
+
+    series = get_subscriber_series(days=14)
+    deltas = compute_daily_deltas(series)
+    week = [d for d in deltas if d["delta"] is not None][-7:]
+    return {
+        "deltas": deltas,
+        "current": deltas[-1]["subscribers"] if deltas else None,
+        "week_delta": sum(d["delta"] for d in week) if week else 0,
+        "anomaly": detect_churn_anomaly(deltas, threshold_pct=threshold),
+    }
+
+
 def get_recent_events(limit: int = 20) -> list[dict]:
     with sqlite_conn() as conn:
         rows = conn.execute(
@@ -368,6 +420,7 @@ def run() -> int:
         recent_decisions=get_recent_decisions(),
         recent_events=get_recent_events(),
         ctr=get_ctr_stats(),
+        growth=get_growth_stats(),
         generated_at=datetime.now().isoformat(timespec="seconds"),
     )
 
