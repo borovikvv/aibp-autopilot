@@ -47,6 +47,16 @@ CLICHE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Promotional / clickbait CTA phrases — banned everywhere, including appended
+# CTAs (issue #26). The channel's tone is anti-hype; a CTA must invite, not sell.
+PROMOTIONAL_CTA_RE = re.compile(
+    r"(подпишите?сь|подписывайте?сь|не\s+пропуст\w+|жм[иё]те|"
+    r"ставьте\s+лайк\w*|переходите\s+по\s+ссылк\w+|регистрируйте?сь|"
+    r"покупайте?|заказывайте?|пишите\s+в\s+директ|"
+    r"успей\w*\s+купить|только\s+сегодня|перейди\w*\s+по\s+ссылк\w+)",
+    re.IGNORECASE,
+)
+
 # Source framing — post must NOT refer to source in body (only at end)
 SOURCE_FRAMING_RE = re.compile(
     r"(В\s+материал[еа](?:\s+[A-ZА-ЯЁA-Za-zА-Яа-яЁё0-9 ._—–-]{0,80})?|"
@@ -130,6 +140,17 @@ def _verdict(status: str, hits: list | None = None, note: str | None = None) -> 
     if note:
         result["note"] = note
     return result
+
+
+def validate_cta_text(text: str) -> dict[str, Any]:
+    """Check a CTA snippet against the promotional-phrase banlist (issue #26).
+
+    CTA text is appended AFTER validate_post, so it would otherwise bypass the
+    editorial gate. Returns {"ok": bool, "status": ..., "hits": [...]}.
+    """
+    hits = _hits(PROMOTIONAL_CTA_RE, _plain(text))
+    status = "fail" if hits else "pass"
+    return {"ok": not hits, **_verdict(status, hits, note="promotional CTA phrase" if hits else None)}
 
 
 def validate_post(

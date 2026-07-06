@@ -1,10 +1,13 @@
-"""Tests for CTA variants as a policy dimension (issue #16)."""
+"""Tests for CTA variants as a policy dimension (issue #16, #26)."""
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+import pytest
+
 from aibp.generation.pipeline import CTA_TEMPLATES, append_cta, select_cta_variant
+from aibp.generation.quality_gate import validate_cta_text
 from aibp.self_learning.policy_updater import apply_change_to_policy, validate_change_spec
 
 # ═══════════════════════════════════════════════════════════════════
@@ -92,3 +95,38 @@ def test_apply_cta_change():
     new_policy = apply_change_to_policy(CURRENT_POLICY, hyp)
     assert new_policy["cta_variants"]["affiliate_link"] == 1.5
     assert CURRENT_POLICY["cta_variants"]["affiliate_link"] == 1.0  # original untouched
+
+
+# ═══════════════════════════════════════════════════════════════════
+# CTA quality gate (issue #26): CTA text bypasses validate_post, so its
+# promotional-phrase banlist is enforced separately before appending.
+# ═══════════════════════════════════════════════════════════════════
+
+def test_shipped_cta_templates_pass_the_gate():
+    """Every authored CTA must clear the promotional banlist — this guards
+    against a future edit sneaking a clickbait phrase past the gate."""
+    for variant, text in CTA_TEMPLATES.items():
+        assert validate_cta_text(text)["ok"], f"{variant} is promotional: {text}"
+
+
+@pytest.mark.parametrize("phrase", [
+    "Подпишитесь, чтобы не пропустить следующие разборы!",
+    "Не пропустите новый пост",
+    "Жмите на ссылку",
+    "Ставьте лайк и переходите по ссылке",
+    "Регистрируйтесь прямо сейчас",
+    "Успей купить только сегодня",
+])
+def test_promotional_ctas_are_rejected(phrase):
+    result = validate_cta_text(phrase)
+    assert result["ok"] is False
+    assert result["status"] == "fail"
+
+
+@pytest.mark.parametrize("phrase", [
+    "Где в вашем процессе такая граница уже нужна?",
+    "Сохраните пост — пригодится при внедрении.",
+    "Расскажите в комментариях, что сработало.",
+])
+def test_neutral_ctas_pass(phrase):
+    assert validate_cta_text(phrase)["ok"] is True

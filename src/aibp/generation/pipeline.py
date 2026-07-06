@@ -15,7 +15,7 @@ from jinja2 import Template
 
 from aibp.db.connection import execute, fetch_all
 from aibp.enrichment.llm_client import OpenRouterClient
-from aibp.generation.quality_gate import validate_post
+from aibp.generation.quality_gate import validate_cta_text, validate_post
 from aibp.utils.config import get_settings, load_policy
 from aibp.utils.summary import parse_summary
 
@@ -403,13 +403,21 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     if scheduled <= now_msk:
         scheduled += timedelta(hours=1)
 
-    # CTA variant — prod only (that's where conversion is measured)
+    # CTA variant — prod only (that's where conversion is measured). The CTA is
+    # appended after validate_post, so its text must pass the promotional-phrase
+    # gate explicitly or it would bypass editorial tone checks (issue #26).
     cta_variant = None
     if pipeline_env == "prod":
-        cta_variant = select_cta_variant(policy)
-        if cta_variant:
-            post = append_cta(post, cta_variant)
-            log.info("cta_appended", variant=cta_variant, candidate_id=candidate["id"])
+        candidate_variant = select_cta_variant(policy)
+        if candidate_variant:
+            cta_check = validate_cta_text(CTA_TEMPLATES[candidate_variant])
+            if cta_check["ok"]:
+                post = append_cta(post, candidate_variant)
+                cta_variant = candidate_variant
+                log.info("cta_appended", variant=cta_variant, candidate_id=candidate["id"])
+            else:
+                log.warning("cta_rejected_by_gate", variant=candidate_variant,
+                            hits=cta_check.get("hits"))
 
     summary = parse_summary(candidate.get("summary"))
     summary_patch = {
