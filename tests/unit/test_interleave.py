@@ -8,8 +8,7 @@ Covers:
 """
 import json
 import sys
-import tempfile
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,7 +23,6 @@ from aibp.self_learning.interleave import (
     assignment_for_date,
     resolve_policy_for_today,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════
 # Assignment determinism
@@ -57,7 +55,7 @@ def temp_db(tmp_path):
 
 
 def _insert_experiment(policy_before: str, policy_after: str, started_days_ago: int = 8) -> int:
-    started = (datetime.now(timezone.utc) - timedelta(days=started_days_ago)).isoformat()
+    started = (datetime.now(UTC) - timedelta(days=started_days_ago)).isoformat()
     with sl_db.sqlite_conn() as conn:
         cur = conn.execute(
             """
@@ -74,7 +72,7 @@ def _insert_experiment(policy_before: str, policy_after: str, started_days_ago: 
 
 def _insert_post(feed_item_id: int, policy_version: str, posted_days_ago: int,
                  views: int, subs: int, channel: str = "main") -> None:
-    posted = (datetime.now(timezone.utc) - timedelta(days=posted_days_ago)).isoformat()
+    posted = (datetime.now(UTC) - timedelta(days=posted_days_ago)).isoformat()
     with sl_db.sqlite_conn() as conn:
         conn.execute(
             """
@@ -120,7 +118,7 @@ def test_resolve_policy_variant_day_returns_shadow_policy(temp_db):
                                   applies_to, status)
             VALUES ('v_variant', ?, 'test', '', ?, 'stage', 'draft')
             """,
-            (datetime.now(timezone.utc).isoformat(), json.dumps(variant_policy)),
+            (datetime.now(UTC).isoformat(), json.dumps(variant_policy)),
         )
     _insert_experiment("v_prod", "v_variant")
 
@@ -205,7 +203,7 @@ def test_decision_ignores_posts_before_experiment_start(temp_db):
     """Posts published before the experiment started are excluded."""
     from aibp.self_learning.decision_engine import get_engagement_for_policy_version
 
-    since = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    since = (datetime.now(UTC) - timedelta(days=5)).isoformat()
     _insert_post(1, "v_control", posted_days_ago=10, views=100, subs=1000)  # before
     _insert_post(2, "v_control", posted_days_ago=2, views=100, subs=1000)   # after
 

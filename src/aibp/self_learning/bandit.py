@@ -19,14 +19,14 @@ update_from_engagement's dimension extractors.
 from __future__ import annotations
 
 import statistics
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
 from aibp.self_learning.db import (
-    sqlite_conn,
-    get_snapshot_at_horizon,
     ENGAGEMENT_HORIZON_HOURS,
+    get_snapshot_at_horizon,
+    sqlite_conn,
 )
 
 log = structlog.get_logger()
@@ -45,7 +45,7 @@ MIN_BASELINE_POSTS = 5
 
 def ensure_arms(dimension: str, arm_ids: list[str]) -> None:
     """Create missing arms with a uniform Beta(1, 1) prior."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     with sqlite_conn() as conn:
         for arm_id in arm_ids:
             conn.execute(
@@ -70,7 +70,7 @@ def get_arms(dimension: str) -> dict[str, tuple[float, float]]:
 def record_outcome(dimension: str, arm_id: str, success: bool,
                    feed_item_id: int | None = None) -> None:
     """Update the arm posterior; optionally log the observation for idempotency."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     with sqlite_conn() as conn:
         conn.execute(
             """

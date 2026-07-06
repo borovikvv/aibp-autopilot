@@ -5,7 +5,7 @@ two posts of equal quality but different ages must show equal engagement
 rate at the fixed horizon.
 """
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -50,7 +50,7 @@ def _insert_snapshot(feed_item_id: int, measured_at: datetime,
         )
 
 
-NOW = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -118,8 +118,8 @@ def test_equal_quality_posts_of_different_ages_have_equal_rates(temp_db):
     """An old post accumulated more total views, but at the 48h horizon both
     posts are identical — MAX/last would have made the old post 'win'."""
     from aibp.self_learning.decision_engine import (
-        get_engagement_for_policy_version,
         compute_engagement_rates,
+        get_engagement_for_policy_version,
     )
 
     old_posted = NOW - timedelta(days=10)

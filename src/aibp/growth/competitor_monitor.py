@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import structlog
@@ -50,7 +50,7 @@ def load_growth_config() -> dict:
 
 def get_subscriber_series(days: int = 30) -> list[dict]:
     """Daily subscriber counts for the main channel (max snapshot per day)."""
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     with sqlite_conn() as conn:
         rows = conn.execute(
             """
@@ -165,7 +165,7 @@ def get_our_er_percent() -> float | None:
     """Own ER at the 48h horizon over the last 30 days, in percent."""
     from aibp.self_learning.db import get_snapshot_at_horizon
 
-    since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    since = (datetime.now(UTC) - timedelta(days=30)).isoformat()
     with sqlite_conn() as conn:
         rows = conn.execute(
             """
@@ -184,7 +184,7 @@ def get_our_er_percent() -> float | None:
 
 def build_report(deltas: list[dict], anomaly: dict | None,
                  recommendations: list[dict], our_er: float | None) -> str:
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     lines = [f"# Growth report — {today}", ""]
 
     lines.append("## Динамика подписчиков (главный канал)")

@@ -1,6 +1,6 @@
 """Tests for growth monitoring (issue #19)."""
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,7 +8,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import pytest
 
-from aibp.self_learning import db as sl_db
 from aibp.growth.competitor_monitor import (
     build_recommendation,
     build_report,
@@ -16,6 +15,7 @@ from aibp.growth.competitor_monitor import (
     detect_churn_anomaly,
     get_subscriber_series,
 )
+from aibp.self_learning import db as sl_db
 
 
 @pytest.fixture()
@@ -62,7 +62,7 @@ def test_detect_churn_anomaly_quiet_on_small_drop():
 
 
 def test_subscriber_series_from_snapshots(temp_db):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with sl_db.sqlite_conn() as conn:
         conn.execute(
             """

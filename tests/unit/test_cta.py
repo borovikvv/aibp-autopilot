@@ -7,7 +7,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from aibp.generation.pipeline import CTA_TEMPLATES, append_cta, select_cta_variant
 from aibp.self_learning.policy_updater import apply_change_to_policy, validate_change_spec
 
-
 # ═══════════════════════════════════════════════════════════════════
 # Variant selection
 # ═══════════════════════════════════════════════════════════════════

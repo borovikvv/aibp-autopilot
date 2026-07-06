@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC
 
 import httpx
 import structlog
 
-from aibp.self_learning.db import sqlite_conn, log_autopilot_event
+from aibp.self_learning.db import log_autopilot_event, sqlite_conn
 from aibp.utils.config import get_settings
 
 log = structlog.get_logger()
@@ -130,7 +131,7 @@ def handle_callback(callback_data: str) -> str:
         log.error("approval_apply_failed", experiment=experiment_id)
         return "ignored"
 
-    from datetime import datetime, timezone
+    from datetime import datetime
     with sqlite_conn() as conn:
         conn.execute(
             """
@@ -139,7 +140,7 @@ def handle_callback(callback_data: str) -> str:
                 decision_reason = COALESCE(decision_reason, '') || ' [rejected by human]'
             WHERE id = ?
             """,
-            (datetime.now(timezone.utc).isoformat(), experiment_id),
+            (datetime.now(UTC).isoformat(), experiment_id),
         )
     log_autopilot_event("approval_rejected", experiment_id=experiment_id)
     return "rejected"

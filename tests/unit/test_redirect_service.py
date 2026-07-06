@@ -16,7 +16,6 @@ import pytest
 
 from aibp.tracking import redirect_service as rs
 
-
 # ═══════════════════════════════════════════════════════════════════
 # In-memory DB double
 # ═══════════════════════════════════════════════════════════════════

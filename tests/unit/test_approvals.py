@@ -1,7 +1,7 @@
 """Tests for the human approval gate (issue #20)."""
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -39,7 +39,7 @@ def _insert_experiment(experiment_type: str, status: str = "shadow_running") -> 
                  applies_to, status, assignment_mode)
             VALUES (?, ?, 'hyp', 'v_before', 'v_after', 'stage', ?, 'interleave')
             """,
-            (datetime.now(timezone.utc).isoformat(), experiment_type, status),
+            (datetime.now(UTC).isoformat(), experiment_type, status),
         )
         return cur.lastrowid
 
@@ -52,7 +52,7 @@ def _insert_policy(version: str = "v_after") -> None:
                                   applies_to, status)
             VALUES (?, ?, 'test', '', ?, 'stage', 'draft')
             """,
-            (version, datetime.now(timezone.utc).isoformat(),
+            (version, datetime.now(UTC).isoformat(),
              json.dumps({"version": version, "rubric_weights": {"anti_hype": 1.3}})),
         )
 

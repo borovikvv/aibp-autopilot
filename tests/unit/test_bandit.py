@@ -1,6 +1,6 @@
 """Tests for the Thompson sampling bandit (issue #18)."""
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,8 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 import numpy as np
 import pytest
 
-from aibp.self_learning import db as sl_db
 from aibp.self_learning import bandit
+from aibp.self_learning import db as sl_db
 
 
 @pytest.fixture()
@@ -91,7 +91,7 @@ def test_bandit_converges_to_best_arm(temp_db):
 
 def _insert_post(feed_item_id: int, rubric: str, posted_days_ago: float,
                  views: int, subs: int = 1000) -> None:
-    posted = datetime.now(timezone.utc) - timedelta(days=posted_days_ago)
+    posted = datetime.now(UTC) - timedelta(days=posted_days_ago)
     with sl_db.sqlite_conn() as conn:
         conn.execute(
             """
