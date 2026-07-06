@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS post_features (
     has_image         INTEGER,
     visual_kind       TEXT,
     scheduled_hour    INTEGER,
+    cta_variant       TEXT,
     policy_version    TEXT NOT NULL,
     policy_blob       TEXT NOT NULL
 );
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS experiments_log (
     policy_after      TEXT NOT NULL,
     applies_to        TEXT NOT NULL,
     status            TEXT NOT NULL,
+    assignment_mode   TEXT NOT NULL DEFAULT 'interleave',
     control_posts     TEXT,
     shadow_posts      TEXT,
     control_engagement TEXT,
@@ -96,6 +98,24 @@ CREATE TABLE IF NOT EXISTS prompt_changes (
     experiment_id     INTEGER,
     reverted_at       TIMESTAMP,
     FOREIGN KEY (experiment_id) REFERENCES experiments_log(id)
+);
+
+CREATE TABLE IF NOT EXISTS bandit_arms (
+    dimension   TEXT NOT NULL,
+    arm_id      TEXT NOT NULL,
+    alpha       REAL NOT NULL DEFAULT 1,
+    beta        REAL NOT NULL DEFAULT 1,
+    updated_at  TIMESTAMP,
+    PRIMARY KEY (dimension, arm_id)
+);
+
+CREATE TABLE IF NOT EXISTS bandit_observations (
+    feed_item_id INTEGER NOT NULL,
+    dimension    TEXT NOT NULL,
+    arm_id       TEXT NOT NULL,
+    success      INTEGER NOT NULL,
+    observed_at  TIMESTAMP NOT NULL,
+    PRIMARY KEY (feed_item_id, dimension)
 );
 
 CREATE TABLE IF NOT EXISTS autopilot_events (
@@ -132,11 +152,57 @@ def sqlite_conn() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+# Columns added after initial release. CREATE IF NOT EXISTS does not alter
+# existing tables, so init_db() backfills them on already-deployed DBs.
+_COLUMN_MIGRATIONS = [
+    ("experiments_log", "assignment_mode", "TEXT NOT NULL DEFAULT 'cross_channel'"),
+    ("post_features", "cta_variant", "TEXT"),
+]
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    for table, column, ddl in _COLUMN_MIGRATIONS:
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+            log.info("sqlite_column_added", table=table, column=column)
+
+
 def init_db() -> None:
     """Create all tables. Idempotent."""
     with sqlite_conn() as conn:
         conn.executescript(SCHEMA)
+        _ensure_columns(conn)
     log.info("sqlite_initialized", path=str(get_db_path()))
+
+
+# Telegram views keep growing for ~72h after publishing. Comparing posts of
+# different ages by MAX/last snapshot systematically favors older posts, so
+# all engagement comparisons use the snapshot closest to this fixed horizon.
+ENGAGEMENT_HORIZON_HOURS = 48
+
+
+def get_snapshot_at_horizon(feed_item_id: int, hours: int = ENGAGEMENT_HORIZON_HOURS) -> dict | None:
+    """Engagement snapshot closest to posted_at + hours.
+
+    If no snapshot exists exactly at the horizon, the nearest one is used —
+    before or after, whichever is closer in time. Returns None when the post
+    has no snapshots at all.
+    """
+    with sqlite_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT em.views, em.forwards, em.replies, em.reactions_count,
+                   em.subscribers_at, em.measured_at
+            FROM engagement_metrics em
+            JOIN post_features pf ON pf.feed_item_id = em.feed_item_id
+            WHERE em.feed_item_id = ?
+            ORDER BY ABS(julianday(em.measured_at) - julianday(pf.posted_at) - ? / 24.0)
+            LIMIT 1
+            """,
+            (feed_item_id, float(hours)),
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def policy_version(policy_dict: dict) -> str:

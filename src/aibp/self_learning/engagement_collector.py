@@ -384,6 +384,7 @@ def extract_features_for_post(item: dict) -> dict:
         "has_image": 1 if item.get("image_url") else 0,
         "visual_kind": summary.get("visual_kind"),
         "scheduled_hour": scheduled_hour,
+        "cta_variant": summary.get("cta_variant"),
         "policy_version": summary.get("policy_version", "unknown"),
         "policy_blob": json.dumps(summary, ensure_ascii=False),
     }
@@ -461,8 +462,9 @@ async def run_async() -> int:
                         (feed_item_id, posted_at, slot, pipeline_env, target_channel,
                          strategy_rubric, topic_cluster, source_domain, source_url,
                          char_count, paragraph_count, bold_count, emoji_count,
-                         has_image, visual_kind, scheduled_hour, policy_version, policy_blob)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         has_image, visual_kind, scheduled_hour, cta_variant,
+                         policy_version, policy_blob)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     tuple(features.values()),
                 )
@@ -525,6 +527,15 @@ async def run_async() -> int:
         failed=metrics_failed,
         method="copyMessage" if metrics_chat_id else "getUpdates",
     )
+
+    # Feed the bandit (issue #18): posts past the 48h horizon are scored
+    # against the trailing median. Never fail the collection run over it.
+    try:
+        from aibp.self_learning.bandit import update_from_engagement
+        update_from_engagement()
+    except Exception as e:
+        log.warning("bandit_update_failed", error=str(e))
+
     return 0
 
 

@@ -57,6 +57,25 @@ def resume_autopilot() -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Approval gate (issue #20)
+# ═══════════════════════════════════════════════════════════════════
+
+# High-risk experiment types that change post structure or quality gates.
+# Everything else (rubric weights, CTA weights, source scores) stays
+# auto-applied — the gate reduces risk without blocking autonomy.
+DEFAULT_APPROVAL_REQUIRED = ("post_param", "regex_gate")
+
+
+def requires_approval(experiment_type: str) -> bool:
+    """True when promoting this experiment type needs a human approve tap."""
+    policy = load_policy()
+    required = policy.get("safety", {}).get(
+        "approval_required_for", list(DEFAULT_APPROVAL_REQUIRED)
+    )
+    return experiment_type in required
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Rate Limiter
 # ═══════════════════════════════════════════════════════════════════
 

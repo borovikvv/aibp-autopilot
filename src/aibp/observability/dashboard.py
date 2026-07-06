@@ -4,13 +4,15 @@ Daily cron: writes static HTML to dashboard_output_path.
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import structlog
 from jinja2 import Template
 
-from aibp.self_learning.db import sqlite_conn
-from aibp.utils.config import get_settings, load_policy
+from aibp.self_learning.db import sqlite_conn, get_snapshot_at_horizon
+from aibp.utils.config import PROJECT_ROOT, get_settings, load_policy
 
 log = structlog.get_logger()
 
@@ -116,6 +118,87 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
   <p>No finished experiments yet.</p>
   {% endif %}
 
+  <h2>Growth — subscribers (last 14 days)</h2>
+  {% if growth.anomaly %}
+  <div class="paused">⚠️ ОТТОК {{ '%.1f'|format(growth.anomaly.delta_pct) }}% за {{ growth.anomaly.day }}
+    ({{ growth.anomaly.delta }} подписчиков)</div>
+  {% endif %}
+  {% if growth.deltas %}
+  <div class="metric">
+    <div class="metric-value">{{ growth.current }}</div>
+    <div class="metric-label">Subscribers now</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">{{ '%+d'|format(growth.week_delta) }}</div>
+    <div class="metric-label">Delta (7d)</div>
+  </div>
+  <table>
+    <tr><th>Day</th><th>Subscribers</th><th>Δ</th><th>Δ%</th></tr>
+    {% for d in growth.deltas[-14:] %}
+    <tr>
+      <td>{{ d.day }}</td>
+      <td>{{ d.subscribers }}</td>
+      <td>{{ '%+d'|format(d.delta) if d.delta is not none else '—' }}</td>
+      <td>{{ '%+.2f%%'|format(d.delta_pct) if d.delta_pct is not none else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p>No subscriber snapshots yet.</p>
+  {% endif %}
+
+  <h2>CTR — clicks / views at 48h (last 30 days)</h2>
+  {% if ctr.posts %}
+  <table>
+    <tr>
+      <th>Post</th><th>Slot</th><th>Policy</th><th>CTA</th><th>Views (48h)</th><th>Clicks</th><th>CTR</th>
+    </tr>
+    {% for p in ctr.posts %}
+    <tr>
+      <td>{{ p.feed_item_id }}</td>
+      <td>{{ p.slot }}</td>
+      <td><code>{{ p.policy_version[:12] }}</code></td>
+      <td>{{ p.cta_variant }}</td>
+      <td>{{ p.views if p.views is not none else '—' }}</td>
+      <td>{{ p.clicks }}</td>
+      <td>{{ '%.2f%%'|format(p.ctr * 100) if p.ctr is not none else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% if ctr.by_cta %}
+  <h3>Conversion by CTA variant</h3>
+  <table>
+    <tr><th>CTA variant</th><th>Posts</th><th>Views (48h)</th><th>Clicks</th><th>CTR</th></tr>
+    {% for row in ctr.by_cta %}
+    <tr>
+      <td>{{ row.cta_variant }}</td>
+      <td>{{ row.n_posts }}</td>
+      <td>{{ row.views }}</td>
+      <td>{{ row.clicks }}</td>
+      <td>{{ '%.2f%%'|format(row.ctr * 100) if row.ctr is not none else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% if ctr.by_policy %}
+  <h3>CTR by policy version</h3>
+  <table>
+    <tr><th>Policy</th><th>Posts</th><th>Views (48h)</th><th>Clicks</th><th>CTR</th></tr>
+    {% for row in ctr.by_policy %}
+    <tr>
+      <td><code>{{ row.policy_version[:12] }}</code></td>
+      <td>{{ row.n_posts }}</td>
+      <td>{{ row.views }}</td>
+      <td>{{ row.clicks }}</td>
+      <td>{{ '%.2f%%'|format(row.ctr * 100) if row.ctr is not none else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% else %}
+  <p>No click data yet (tracking disabled or no clicks recorded).</p>
+  {% endif %}
+
   <h2>Recent Autopilot Events</h2>
   {% if recent_events %}
   <table>
@@ -143,7 +226,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 
 def get_metrics() -> dict:
     """Get summary metrics for dashboard."""
-    week_ago = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     with sqlite_conn() as conn:
         # Total posts
         row = conn.execute(
@@ -215,6 +298,102 @@ def get_recent_decisions(limit: int = 10) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_ctr_stats(days: int = 30) -> dict:
+    """CTR per post and per policy version: clicks (PostgreSQL) over views
+    at the 48h horizon (SQLite). Degrades to empty when PG is unreachable
+    or click tracking is not deployed."""
+    try:
+        from aibp.db.connection import fetch_all as pg_fetch_all
+        click_rows = pg_fetch_all(
+            "SELECT feed_item_id, COUNT(*) AS clicks FROM link_clicks GROUP BY feed_item_id"
+        )
+    except Exception as e:
+        log.warning("ctr_stats_unavailable", error=str(e))
+        return {"posts": [], "by_policy": []}
+
+    clicks_by_item = {r["feed_item_id"]: r["clicks"] for r in click_rows}
+
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with sqlite_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT feed_item_id, slot, policy_version, cta_variant
+            FROM post_features
+            WHERE posted_at >= ? AND target_channel = 'main'
+            ORDER BY posted_at DESC
+            """,
+            (since,),
+        ).fetchall()
+
+    posts = []
+    for r in rows:
+        snapshot = get_snapshot_at_horizon(r["feed_item_id"])
+        views = snapshot["views"] if snapshot else None
+        clicks = clicks_by_item.get(r["feed_item_id"], 0)
+        posts.append({
+            "feed_item_id": r["feed_item_id"],
+            "slot": r["slot"],
+            "policy_version": r["policy_version"] or "",
+            "cta_variant": r["cta_variant"] or "none",
+            "views": views,
+            "clicks": clicks,
+            "ctr": (clicks / views) if views else None,
+        })
+
+    by_policy: dict[str, dict] = {}
+    for p in posts:
+        agg = by_policy.setdefault(
+            p["policy_version"], {"policy_version": p["policy_version"],
+                                  "n_posts": 0, "views": 0, "clicks": 0}
+        )
+        agg["n_posts"] += 1
+        agg["views"] += p["views"] or 0
+        agg["clicks"] += p["clicks"]
+    for agg in by_policy.values():
+        agg["ctr"] = (agg["clicks"] / agg["views"]) if agg["views"] else None
+
+    by_cta: dict[str, dict] = {}
+    for p in posts:
+        agg = by_cta.setdefault(
+            p["cta_variant"], {"cta_variant": p["cta_variant"],
+                               "n_posts": 0, "views": 0, "clicks": 0}
+        )
+        agg["n_posts"] += 1
+        agg["views"] += p["views"] or 0
+        agg["clicks"] += p["clicks"]
+    for agg in by_cta.values():
+        agg["ctr"] = (agg["clicks"] / agg["views"]) if agg["views"] else None
+
+    return {
+        "posts": posts[:15],
+        "by_policy": list(by_policy.values()),
+        "by_cta": list(by_cta.values()),
+    }
+
+
+def get_growth_stats() -> dict:
+    """Subscriber dynamics for the Growth section. The 5%/24h churn threshold
+    already existed in policy.safety — it just was never visualized."""
+    from aibp.growth.competitor_monitor import (
+        compute_daily_deltas,
+        detect_churn_anomaly,
+        get_subscriber_series,
+    )
+
+    policy = load_policy()
+    threshold = policy.get("safety", {}).get("subscribers_drop_24h_pct", 5)
+
+    series = get_subscriber_series(days=14)
+    deltas = compute_daily_deltas(series)
+    week = [d for d in deltas if d["delta"] is not None][-7:]
+    return {
+        "deltas": deltas,
+        "current": deltas[-1]["subscribers"] if deltas else None,
+        "week_delta": sum(d["delta"] for d in week) if week else 0,
+        "anomaly": detect_churn_anomaly(deltas, threshold_pct=threshold),
+    }
+
+
 def get_recent_events(limit: int = 20) -> list[dict]:
     with sqlite_conn() as conn:
         rows = conn.execute(
@@ -240,6 +419,8 @@ def run() -> int:
         active_experiments=get_active_experiments(),
         recent_decisions=get_recent_decisions(),
         recent_events=get_recent_events(),
+        ctr=get_ctr_stats(),
+        growth=get_growth_stats(),
         generated_at=datetime.now().isoformat(timespec="seconds"),
     )
 

@@ -6,16 +6,18 @@ For shadow testing: stage generation uses policy.stage.yaml and publishes to tes
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import structlog
 from jinja2 import Template
 
-from aibp.db.connection import execute, fetch_all
+import re
+
+from aibp.db.connection import fetch_all, fetch_one, execute, execute_returning
 from aibp.enrichment.llm_client import OpenRouterClient
 from aibp.generation.quality_gate import validate_post
-from aibp.utils.config import load_policy
+from aibp.utils.config import get_settings, load_policy
 from aibp.utils.summary import parse_summary
 
 log = structlog.get_logger()
@@ -178,12 +180,24 @@ def select_candidate(slot: str, policy: dict, pipeline_env: str = "prod") -> dic
     if not slot_filtered:
         slot_filtered = candidates
 
+    # Thompson sampling multipliers (issue #18): the bandit nudges rubric
+    # weights within [0.5x, 1.5x] per post, learning from every published
+    # post instead of waiting for weekly experiments. Selection must not
+    # fail if the bandit state is unavailable.
+    bandit_multipliers: dict[str, float] = {}
+    if pipeline_env == "prod" and rubric_weights:
+        try:
+            from aibp.self_learning.bandit import sample_rubric_multipliers
+            bandit_multipliers = sample_rubric_multipliers(list(rubric_weights))
+        except Exception as e:
+            log.warning("bandit_unavailable", error=str(e))
+
     # Apply rubric weights
     def weighted_score(c: dict) -> float:
         summary = parse_summary(c.get("summary"))
         editorial = summary.get("editorial", {})
         rubric = editorial.get("strategy_rubric", "")
-        weight = rubric_weights.get(rubric, 1.0)
+        weight = rubric_weights.get(rubric, 1.0) * bandit_multipliers.get(rubric, 1.0)
         base = float(c.get("rank_score", 50))
         return base * weight
 
@@ -241,6 +255,77 @@ def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterCl
 
 
 # ═══════════════════════════════════════════════════════════════════
+# CTA variants (issue #16)
+# ═══════════════════════════════════════════════════════════════════
+
+# CTA texts per variant. The variant name (not the text) is the policy
+# dimension: pattern miner proposes weight changes, decision engine measures
+# conversion per variant.
+CTA_TEMPLATES = {
+    "save_forward": "Сохраните пост — пригодится, когда дойдёте до внедрения. "
+                    "И перешлите коллеге, который этим занимается.",
+    "affiliate_link": "Детали, тарифы и ограничения — по ссылке ниже.",
+    "comment_prompt": "Пробовали похожее у себя? Расскажите в комментариях, что сработало.",
+}
+
+
+def select_cta_variant(policy: dict) -> str | None:
+    """Sample one CTA variant according to policy weights. None disables CTA."""
+    weights = policy.get("cta_variants") or {}
+    valid = {
+        k: float(v) for k, v in weights.items()
+        if k in CTA_TEMPLATES and isinstance(v, (int, float)) and v > 0
+    }
+    if not valid:
+        return None
+    import random
+    return random.choices(list(valid.keys()), weights=list(valid.values()))[0]
+
+
+def append_cta(post: str, variant: str) -> str:
+    """Insert the CTA paragraph before the final source link."""
+    text = CTA_TEMPLATES.get(variant)
+    if not text:
+        return post
+    cta_html = f"<i>{text}</i>"
+    lines = post.rstrip().rsplit("\n", 1)
+    if len(lines) == 2 and "Источник" in lines[1]:
+        return f"{lines[0]}\n{cta_html}\n\n{lines[1]}"
+    return f"{post.rstrip()}\n\n{cta_html}"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Click tracking (issue #15)
+# ═══════════════════════════════════════════════════════════════════
+
+_HREF_RE = re.compile(r'<a href="([^"]+)">')
+
+
+def wrap_tracked_links(post: str, feed_item_id: int) -> str:
+    """Replace direct external URLs in the post with tracked short redirects.
+
+    Runs AFTER the quality gate (which validates the original source URL).
+    No-op when TRACKING_BASE_URL is not configured or on registry errors —
+    a post with a direct link is better than no post.
+    """
+    if not get_settings().tracking_base_url:
+        return post
+
+    from aibp.tracking.redirect_service import register_link, short_url
+
+    def _sub(match: re.Match) -> str:
+        url = match.group(1)
+        try:
+            short_id = register_link(feed_item_id, url)
+            return f'<a href="{short_url(short_id)}">'
+        except Exception as e:
+            log.warning("link_tracking_failed", feed_item_id=feed_item_id, url=url, error=str(e))
+            return match.group(0)
+
+    return _HREF_RE.sub(_sub, post)
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Main entry point
 # ═══════════════════════════════════════════════════════════════════
 
@@ -253,6 +338,11 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                       stage → publish to test channel with config/policy.stage.yaml
     """
     policy = load_policy(pipeline_env=pipeline_env)
+    if pipeline_env == "prod":
+        # ADR-0007: an active interleave experiment alternates policies by day
+        # in the main channel; on variant days the shadow policy is used.
+        from aibp.self_learning.interleave import resolve_policy_for_today
+        policy = resolve_policy_for_today(policy)
     client = OpenRouterClient()
 
     candidate = select_candidate(slot, policy, pipeline_env=pipeline_env)
@@ -314,6 +404,14 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     if scheduled <= now_msk:
         scheduled += timedelta(hours=1)
 
+    # CTA variant — prod only (that's where conversion is measured)
+    cta_variant = None
+    if pipeline_env == "prod":
+        cta_variant = select_cta_variant(policy)
+        if cta_variant:
+            post = append_cta(post, cta_variant)
+            log.info("cta_appended", variant=cta_variant, candidate_id=candidate["id"])
+
     summary = parse_summary(candidate.get("summary"))
     summary_patch = {
         "hermes": True,
@@ -322,7 +420,8 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         "strategy_rubric": summary.get("editorial", {}).get("strategy_rubric"),
         "policy_version": policy.get("version", "unknown"),
         "pipeline_env": pipeline_env,
-        "generated_at": datetime.now(UTC).isoformat(),
+        "cta_variant": cta_variant,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
     if pipeline_env == "stage":
@@ -362,7 +461,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 candidate["id"],
                 json.dumps(summary_patch, ensure_ascii=False),
                 post,
-                scheduled.astimezone(UTC),
+                scheduled.astimezone(timezone.utc),
                 f"{slot}_stage_shadow",
                 f"{slot}_stage",
                 candidate["id"],
@@ -375,7 +474,8 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
             scheduled=scheduled.isoformat(),
         )
     else:
-        # Prod: UPDATE candidate row in place (existing behavior)
+        # Prod: wrap source links into tracked redirects, then UPDATE in place
+        post = wrap_tracked_links(post, candidate["id"])
         execute(
             """
             UPDATE feed_items
@@ -388,6 +488,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 scheduled_at = %s,
                 used_as = %s,
                 campaign_tag = %s,
+                cta_variant = %s,
                 need_image = false,
                 summary = COALESCE(summary, '{}'::jsonb) || %s::jsonb,
                 updated_at = now()
@@ -395,9 +496,10 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
             """,
             (
                 post,
-                scheduled.astimezone(UTC),
+                scheduled.astimezone(timezone.utc),
                 f"{slot}_post",
                 slot,
+                cta_variant,
                 json.dumps(summary_patch, ensure_ascii=False),
                 candidate["id"],
             ),

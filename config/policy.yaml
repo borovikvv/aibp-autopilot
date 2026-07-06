@@ -44,6 +44,15 @@ post_params:
     max_emoji: 0
     scheduled_hour_msk: 19
 
+# ─── CTA Variants (monetization funnel) ─────────────────────────────
+# Applied at generation: one CTA variant is sampled by weight and appended
+# to prod posts. Logged to post_features.cta_variant so pattern miner and
+# decision engine can optimize conversion (clicks/views), not just style.
+cta_variants:
+  save_forward: 1.0      # save/forward prompt (retention)
+  affiliate_link: 1.0    # push to the tracked source/offer link (revenue)
+  comment_prompt: 1.0    # discussion prompt (engagement signal)
+
 # ─── 3. Regex Gates (auto-populated by self-learning) ─────────────
 # Each entry: {name, pattern, slot, action}
 # action: warn | fail
@@ -76,6 +85,19 @@ safety:
   max_changes_per_day: 1
   max_changes_per_week: 3
   max_rollbacks_per_week: 3
+
+  # Approval gate (issue #20): risk tiering of experiment types.
+  # Low risk (rubric_weight, cta, source_score, visual) auto-applies as before;
+  # high risk (post structure, quality gates) requires a human tap on a
+  # Telegram approve/reject button before promote.
+  approval_required_for: [post_param, regex_gate]
+
+  # Experiment decision criterion (ADR-0008)
+  # At 2 posts/day a 7-day window gives n≈14 per group — hard p-value
+  # thresholds never fired. Bootstrap P(variant > control) is used instead.
+  experiment_window_days: 14
+  promote_probability: 0.95   # promote when P(variant > control) >= this
+  min_effect_pct: 5           # ...and relative effect is at least this
 
   # Anomaly detection thresholds
   engagement_drop_24h_pct: 30   # freeze if >30% drop in 24h

@@ -1,12 +1,12 @@
 """Tests for decision_engine — the only function that auto-affects prod without human review.
 
 This is P0 critical path: covers compute_decision (pure function) with:
-  - Clear promote case (shadow >> control)
-  - Clear reject case (shadow << control)
-  - Continue case (insufficient data, < 14 days)
-  - Reject after 14 days with insufficient data
-  - Boundary values of thresholds
-  - False positive rate regression (random data → < 5% promote)
+  - Clear promote case (variant >> control)
+  - Clear reject case (variant << control)
+  - Continue case (insufficient data, < give_up_days)
+  - Reject after give_up_days with insufficient data
+  - Boundary values of the bootstrap criterion (ADR-0008)
+  - False positive rate regression (random data → < 5-8% promote)
 """
 import sys
 from pathlib import Path
@@ -14,7 +14,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import random
-import statistics
 
 import pytest
 
@@ -28,20 +27,16 @@ def _make_rates(mean: float, n: int, spread: float = 0.05) -> list[float]:
     """Generate n engagement rates around mean with small deterministic spread."""
     if n == 0:
         return []
-    # Deterministic pattern around mean
     offsets = [spread * ((i / max(n - 1, 1)) * 2 - 1) for i in range(n)]
     return [mean + o for o in offsets]
 
 
 def _make_rates_with_effect(control_mean: float, effect_pct: float, n: int, noise: float = 0.02) -> tuple[list[float], list[float]]:
-    """Generate control and shadow rates where shadow is effect_pct better.
-
-    Uses small deterministic noise so statistical tests are reliable.
-    """
+    """Generate control and shadow rates where shadow is effect_pct better."""
     control_offsets = [noise * ((i / max(n - 1, 1)) * 2 - 1) for i in range(n)]
     control = [control_mean + o for o in control_offsets]
     shadow_mean = control_mean * (1 + effect_pct / 100)
-    shadow = [shadow_mean + o for o in control_offsets]  # same offsets, different mean
+    shadow = [shadow_mean + o for o in control_offsets]
     return control, shadow
 
 
@@ -52,28 +47,26 @@ def _make_rates_with_effect(control_mean: float, effect_pct: float, n: int, nois
 def test_clear_promote_case():
     """Shadow is 30% better than control → promote."""
     control, shadow = _make_rates_with_effect(control_mean=0.10, effect_pct=30, n=20)
-    result = compute_decision(control, shadow, exp_age_days=7)
+    result = compute_decision(control, shadow, exp_age_days=14)
     assert result["decision"] == "promote"
-    assert result["effect_size"] is not None
-    assert result["effect_size"] > 0.3
+    assert result["effect_size"] == pytest.approx(0.30, abs=0.02)
     assert result["p_value"] is not None
-    assert result["p_value"] < 0.05
+    assert result["p_value"] >= 0.95  # P(shadow > control)
 
 
 def test_clear_reject_worse_case():
     """Shadow is 20% worse than control → reject."""
     control, shadow = _make_rates_with_effect(control_mean=0.10, effect_pct=-20, n=20)
-    result = compute_decision(control, shadow, exp_age_days=7)
+    result = compute_decision(control, shadow, exp_age_days=14)
     assert result["decision"] == "reject"
     assert "worse than control" in result["reason"]
 
 
 def test_reject_no_improvement():
     """Shadow and control are statistically identical → reject (no improvement)."""
-    # Use same data for both → no difference, high p-value
     control = _make_rates(mean=0.10, n=20, spread=0.03)
     shadow = list(control)  # identical
-    result = compute_decision(control, shadow, exp_age_days=7)
+    result = compute_decision(control, shadow, exp_age_days=14)
     assert result["decision"] == "reject"
     assert "no significant improvement" in result["reason"]
 
@@ -82,8 +75,8 @@ def test_reject_no_improvement():
 # Insufficient data cases
 # ═══════════════════════════════════════════════════════════════════
 
-def test_insufficient_data_under_14_days_continue():
-    """Less than 5 posts, experiment < 14 days old → continue (wait)."""
+def test_insufficient_data_under_give_up_continue():
+    """Less than 5 posts, experiment younger than give_up_days → continue (wait)."""
     control = _make_rates(mean=0.10, n=3)
     shadow = _make_rates(mean=0.12, n=3)
     result = compute_decision(control, shadow, exp_age_days=5)
@@ -91,8 +84,8 @@ def test_insufficient_data_under_14_days_continue():
     assert result["reason"] == "insufficient_data_extending"
 
 
-def test_insufficient_data_after_14_days_reject():
-    """Less than 5 posts, experiment >= 14 days old → reject (gave up)."""
+def test_insufficient_data_after_give_up_reject():
+    """Less than 5 posts, experiment past give_up_days → reject (gave up)."""
     control = _make_rates(mean=0.10, n=3)
     shadow = _make_rates(mean=0.12, n=3)
     result = compute_decision(control, shadow, exp_age_days=15)
@@ -100,8 +93,15 @@ def test_insufficient_data_after_14_days_reject():
     assert result["reason"] == "insufficient_data_after_14d"
 
 
+def test_give_up_days_is_configurable():
+    """A longer window shifts the give-up point (make_decision passes window+7)."""
+    control = _make_rates(mean=0.10, n=3)
+    shadow = _make_rates(mean=0.12, n=3)
+    result = compute_decision(control, shadow, exp_age_days=15, give_up_days=21)
+    assert result["decision"] == "continue"
+
+
 def test_insufficient_control_only():
-    """Control has < 5 posts but shadow has enough → continue/reject based on age."""
     control = _make_rates(mean=0.10, n=4)
     shadow = _make_rates(mean=0.12, n=10)
     result = compute_decision(control, shadow, exp_age_days=5)
@@ -109,7 +109,6 @@ def test_insufficient_control_only():
 
 
 def test_insufficient_shadow_only():
-    """Shadow has < 5 posts but control has enough → continue/reject based on age."""
     control = _make_rates(mean=0.10, n=10)
     shadow = _make_rates(mean=0.12, n=4)
     result = compute_decision(control, shadow, exp_age_days=5)
@@ -117,7 +116,6 @@ def test_insufficient_shadow_only():
 
 
 def test_empty_rates():
-    """No data at all → continue (if < 14 days) or reject (if >= 14 days)."""
     result_young = compute_decision([], [], exp_age_days=3)
     assert result_young["decision"] == "continue"
 
@@ -127,55 +125,49 @@ def test_empty_rates():
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Boundary value tests
+# Boundary value tests (bootstrap criterion, ADR-0008)
 # ═══════════════════════════════════════════════════════════════════
 
-def test_boundary_just_above_promote_thresholds():
-    """Shadow +10.5%, p<0.05, d>0.3 → promote (just above all thresholds)."""
-    # Design data so shadow is ~10% better with low variance → significant
-    control = [0.100, 0.101, 0.099, 0.100, 0.101, 0.099, 0.100, 0.101, 0.099, 0.100,
-               0.101, 0.099, 0.100, 0.101, 0.099]
-    shadow = [0.111, 0.112, 0.110, 0.111, 0.112, 0.110, 0.111, 0.112, 0.110, 0.111,
-              0.112, 0.110, 0.111, 0.112, 0.110]
-    result = compute_decision(control, shadow, exp_age_days=7)
-    assert result["decision"] == "promote"
+def test_small_but_certain_improvement_promotes():
+    """+8% with tiny variance → P(shadow>control)≈1 and effect >= 5% → promote.
 
-
-def test_boundary_just_below_effect_size():
-    """If effect_size <= 0.3 → reject even if pct and p_value pass."""
-    # Construct data with +15% improvement but high variance → low Cohen's d
-    control = [0.10, 0.20, 0.05, 0.15, 0.08, 0.25, 0.12, 0.18, 0.09, 0.14] * 2  # spread
-    shadow = [c * 1.15 for c in control]
-    # With same relative spread, Cohen's d may be marginal
-    result = compute_decision(control, shadow, exp_age_days=7)
-    # This should NOT promote because variance is too high relative to mean difference
-    assert result["decision"] in ("promote", "reject")  # at least doesn't crash
-
-
-def test_boundary_exactly_at_pct_threshold():
-    """Shadow_better_pct >= 10 → promote if other thresholds pass.
-
-    Note: Due to floating point, exactly 10.0% may compute as 9.999...
-    So we test with ~10.5% to be safely above the threshold.
+    This is the intended behavioral change vs the old criterion, which
+    demanded >= 10% regardless of certainty.
     """
     n = 30
-    # Deterministic data: control=0.100, shadow=0.105 (5% better is not enough),
-    # so use 0.111 (11% better) to be safely above 10% threshold
     control = [0.100 + (0.001 if i % 2 else -0.001) for i in range(n)]
-    shadow = [0.111 + (0.001 if i % 2 else -0.001) for i in range(n)]
-    result = compute_decision(control, shadow, exp_age_days=7)
+    shadow = [0.108 + (0.001 if i % 2 else -0.001) for i in range(n)]
+    result = compute_decision(control, shadow, exp_age_days=14)
     assert result["decision"] == "promote"
 
 
-def test_boundary_just_below_pct_threshold():
-    """Shadow_better_pct < 10 → reject even if other thresholds would pass."""
+def test_tiny_improvement_below_min_effect_rejects():
+    """+2% is below min_effect (5%) → reject even with high certainty."""
     n = 30
-    # 8% better — below 10% threshold
     control = [0.100 + (0.001 if i % 2 else -0.001) for i in range(n)]
-    shadow = [0.108 + (0.001 if i % 2 else -0.001) for i in range(n)]
-    result = compute_decision(control, shadow, exp_age_days=7)
+    shadow = [0.102 + (0.001 if i % 2 else -0.001) for i in range(n)]
+    result = compute_decision(control, shadow, exp_age_days=14)
     assert result["decision"] == "reject"
     assert "no significant improvement" in result["reason"]
+
+
+def test_large_but_uncertain_improvement_rejects():
+    """+15% mean but variance so high that P(shadow>control) < 0.95 → reject."""
+    control = [0.02, 0.30, 0.05, 0.25, 0.08, 0.28, 0.03, 0.22, 0.06, 0.27]
+    shadow = [c * 1.15 for c in control]
+    random.seed(7)
+    shadow = shadow[3:] + shadow[:3]  # decorrelate pairing
+    result = compute_decision(control, shadow, exp_age_days=14)
+    assert result["decision"] == "reject"
+
+
+def test_min_effect_is_configurable():
+    """Raising min_effect above the observed effect flips promote → reject."""
+    control, shadow = _make_rates_with_effect(control_mean=0.10, effect_pct=8, n=30, noise=0.001)
+    promoted = compute_decision(control, shadow, exp_age_days=14)
+    assert promoted["decision"] == "promote"
+    rejected = compute_decision(control, shadow, exp_age_days=14, min_effect=0.10)
+    assert rejected["decision"] == "reject"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -183,15 +175,14 @@ def test_boundary_just_below_pct_threshold():
 # ═══════════════════════════════════════════════════════════════════
 
 def test_false_positive_rate_under_5_percent():
-    """With random data (no real effect), promote rate must be < 5%.
+    """With random data (no real effect), promote rate must stay low.
 
     This is the most important test: if decision_engine has a bug that
     promotes too aggressively, bad changes will reach production.
 
-    We run 200 synthetic experiments with data drawn from the SAME
-    distribution (no real effect). With p<0.05 threshold, we expect
-    ~5% false positives by chance. Allow up to 10% to account for
-    randomness in the test itself.
+    200 synthetic experiments, both groups drawn from the same distribution.
+    With promote_probability=0.95 the theoretical false positive rate is ~5%;
+    allow up to 8% for test-level randomness.
     """
     random.seed(2024)
     n_experiments = 200
@@ -199,23 +190,42 @@ def test_false_positive_rate_under_5_percent():
     promote_count = 0
 
     for _ in range(n_experiments):
-        # Both groups drawn from same distribution (no real effect)
-        control = [random.gauss(mu=0.10, sigma=0.02) for _ in range(n_posts_per_group)]
-        shadow = [random.gauss(mu=0.10, sigma=0.02) for _ in range(n_posts_per_group)]
-        # Clip to positive values (engagement rates can't be negative)
-        control = [max(0.001, r) for r in control]
-        shadow = [max(0.001, r) for r in shadow]
+        control = [max(0.001, random.gauss(mu=0.10, sigma=0.02)) for _ in range(n_posts_per_group)]
+        shadow = [max(0.001, random.gauss(mu=0.10, sigma=0.02)) for _ in range(n_posts_per_group)]
 
-        result = compute_decision(control, shadow, exp_age_days=10)
+        result = compute_decision(control, shadow, exp_age_days=14)
         if result["decision"] == "promote":
             promote_count += 1
 
     false_positive_rate = promote_count / n_experiments
-    # Allow up to 10% (theoretical is 5%, plus margin for test variance)
-    assert false_positive_rate < 0.10, (
+    assert false_positive_rate < 0.08, (
         f"False positive rate too high: {false_positive_rate:.1%} "
         f"({promote_count}/{n_experiments} promoted with no real effect). "
-        f"Expected < 10%."
+        f"Expected < 8%."
+    )
+
+
+def test_true_positive_rate_on_realistic_effect():
+    """+30% real effect at n=28 (14-day window) must be detected most of the time.
+
+    Guards against the original problem: a criterion so strict the autopilot
+    can never promote anything.
+    """
+    random.seed(2025)
+    n_experiments = 100
+    n_posts_per_group = 28
+    promote_count = 0
+
+    for _ in range(n_experiments):
+        control = [max(0.001, random.gauss(mu=0.10, sigma=0.02)) for _ in range(n_posts_per_group)]
+        shadow = [max(0.001, random.gauss(mu=0.13, sigma=0.02)) for _ in range(n_posts_per_group)]
+
+        result = compute_decision(control, shadow, exp_age_days=14)
+        if result["decision"] == "promote":
+            promote_count += 1
+
+    assert promote_count / n_experiments > 0.8, (
+        f"Power too low: only {promote_count}/{n_experiments} of +30% effects promoted"
     )
 
 
@@ -244,8 +254,8 @@ def test_compute_engagement_rates_handles_none():
         {"latest_views": 100, "latest_subs": 0},      # subs=0 → skipped
     ]
     rates = compute_engagement_rates(posts)
-    assert len(rates) == 1  # only first post has valid subs
-    assert rates[0] == pytest.approx(0.0)  # None views treated as 0
+    assert len(rates) == 1
+    assert rates[0] == pytest.approx(0.0)
 
 
 def test_compute_engagement_rates_empty():
@@ -279,3 +289,11 @@ def test_decision_result_insufficient_data_has_none_stats():
 
     assert result["effect_size"] is None
     assert result["p_value"] is None
+
+
+def test_decision_is_deterministic():
+    """Same inputs → same decision and probability (seeded bootstrap)."""
+    control, shadow = _make_rates_with_effect(control_mean=0.10, effect_pct=12, n=20)
+    r1 = compute_decision(control, shadow, exp_age_days=14)
+    r2 = compute_decision(control, shadow, exp_age_days=14)
+    assert r1 == r2

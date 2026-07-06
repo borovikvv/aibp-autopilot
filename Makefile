@@ -141,8 +141,20 @@ safety-check:
 dashboard:
         $(PYTHON) -m aibp.cli dashboard
 
+# Weekly growth report (subscribers + competitors via TGStat)
+growth-report:
+        $(PYTHON) -m aibp.growth.competitor_monitor
+
+# Click-tracking redirect service (long-lived, run under systemd/docker)
+run-redirect:
+        $(PYTHON) -m aibp.tracking.redirect_service
+
 resume-autopilot:
         $(PYTHON) -m aibp.cli resume-autopilot
+
+# Approval gate: process Telegram approve/reject button taps (issue #20)
+process-approvals:
+        $(PYTHON) -m aibp.self_learning.approvals
 
 # ─── Hermes Agent registration ─────────────────────────────────────
 
