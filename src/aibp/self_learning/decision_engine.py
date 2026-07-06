@@ -21,37 +21,49 @@ POLICY_PATH = PROJECT_ROOT / "config" / "policy.yaml"
 
 
 def get_ready_experiments() -> list[dict]:
-    """Get shadow_running experiments older than 7 days."""
-    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    """Get shadow_running experiments older than the experiment window."""
+    policy = load_policy()
+    window_days = policy.get("safety", {}).get("experiment_window_days", 7)
+    window_ago = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
     with sqlite_conn() as conn:
         rows = conn.execute(
             """
             SELECT id, started_at, experiment_type, hypothesis,
-                   policy_before, policy_after
+                   policy_before, policy_after, assignment_mode
             FROM experiments_log
             WHERE status = 'shadow_running' AND started_at < ?
             """,
-            (week_ago,),
+            (window_ago,),
         ).fetchall()
         return [dict(r) for r in rows]
 
 
-def get_engagement_for_policy_version(policy_version: str) -> list[dict]:
-    """Get all engagement data for posts published with this policy version."""
+def get_engagement_for_policy_version(policy_version: str, since: str | None = None) -> list[dict]:
+    """Get engagement data for main-channel posts published with this policy version.
+
+    ADR-0007: only the main channel counts — the test channel has a different
+    (near-zero) audience, so its engagement is excluded from decisions. With
+    interleaving, control and variant posts are separated by policy_version
+    within the same channel; `since` restricts to posts published after the
+    experiment started.
+    """
+    query = """
+        SELECT pf.feed_item_id, pf.slot, pf.target_channel,
+               MAX(em.views) as latest_views,
+               MAX(em.subscribers_at) as latest_subs
+        FROM post_features pf
+        JOIN engagement_metrics em ON em.feed_item_id = pf.feed_item_id
+        WHERE pf.policy_version = ?
+          AND pf.target_channel = 'main'
+    """
+    params: list = [policy_version]
+    if since is not None:
+        query += " AND pf.posted_at >= ?"
+        params.append(since)
+    query += " GROUP BY pf.feed_item_id, pf.slot, pf.target_channel"
+
     with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT pf.feed_item_id, pf.slot, pf.target_channel,
-                   MAX(em.views) as latest_views,
-                   MAX(em.subscribers_at) as latest_subs
-            FROM post_features pf
-            JOIN engagement_metrics em ON em.feed_item_id = pf.feed_item_id
-            WHERE pf.policy_version = ?
-              AND pf.target_channel IN ('main', 'test')
-            GROUP BY pf.feed_item_id, pf.slot, pf.target_channel
-            """,
-            (policy_version,),
-        ).fetchall()
+        rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -160,8 +172,11 @@ def make_decision(experiment: dict) -> dict:
     This is the I/O wrapper: reads from SQLite, computes experiment age,
     then delegates to the pure compute_decision function.
     """
-    control_posts = get_engagement_for_policy_version(experiment["policy_before"])
-    shadow_posts = get_engagement_for_policy_version(experiment["policy_after"])
+    # Both groups are restricted to the experiment period so they face the
+    # same audience and seasonality (ADR-0007 interleaving).
+    since = experiment["started_at"]
+    control_posts = get_engagement_for_policy_version(experiment["policy_before"], since=since)
+    shadow_posts = get_engagement_for_policy_version(experiment["policy_after"], since=since)
 
     control_rates = compute_engagement_rates(control_posts)
     shadow_rates = compute_engagement_rates(shadow_posts)

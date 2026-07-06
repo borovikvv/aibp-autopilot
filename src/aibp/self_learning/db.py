@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS experiments_log (
     policy_after      TEXT NOT NULL,
     applies_to        TEXT NOT NULL,
     status            TEXT NOT NULL,
+    assignment_mode   TEXT NOT NULL DEFAULT 'interleave',
     control_posts     TEXT,
     shadow_posts      TEXT,
     control_engagement TEXT,
@@ -132,10 +133,26 @@ def sqlite_conn() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+# Columns added after initial release. CREATE IF NOT EXISTS does not alter
+# existing tables, so init_db() backfills them on already-deployed DBs.
+_COLUMN_MIGRATIONS = [
+    ("experiments_log", "assignment_mode", "TEXT NOT NULL DEFAULT 'cross_channel'"),
+]
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    for table, column, ddl in _COLUMN_MIGRATIONS:
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+            log.info("sqlite_column_added", table=table, column=column)
+
+
 def init_db() -> None:
     """Create all tables. Idempotent."""
     with sqlite_conn() as conn:
         conn.executescript(SCHEMA)
+        _ensure_columns(conn)
     log.info("sqlite_initialized", path=str(get_db_path()))
 
 

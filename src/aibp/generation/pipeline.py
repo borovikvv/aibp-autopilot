@@ -253,6 +253,11 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                       stage → publish to test channel with config/policy.stage.yaml
     """
     policy = load_policy(pipeline_env=pipeline_env)
+    if pipeline_env == "prod":
+        # ADR-0007: an active interleave experiment alternates policies by day
+        # in the main channel; on variant days the shadow policy is used.
+        from aibp.self_learning.interleave import resolve_policy_for_today
+        policy = resolve_policy_for_today(policy)
     client = OpenRouterClient()
 
     candidate = select_candidate(slot, policy, pipeline_env=pipeline_env)

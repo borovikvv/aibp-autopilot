@@ -1,6 +1,10 @@
-"""Shadow Test Runner — applies policy variant to stage, runs 7-day test.
+"""Shadow Test Runner — starts interleave experiments (ADR-0007).
 
-Daily cron: takes 'draft' experiments, applies to stage prompt, marks 'shadow_running'.
+Daily cron: takes 'draft' experiments, marks them 'shadow_running'. The prod
+generation pipeline then alternates policies by day in the main channel
+(see aibp.self_learning.interleave). The stage policy file is still written so
+the test channel can serve as a generation quality gate — its engagement data
+is NOT used for decisions.
 """
 from __future__ import annotations
 
@@ -72,15 +76,17 @@ def start_shadow(experiment: dict) -> bool:
         log.error("shadow_policy_not_found", version=experiment["policy_after"])
         return False
 
-    # Apply to stage
+    # Apply to stage (quality gate only — engagement from the test channel
+    # is excluded from decisions, see ADR-0007)
     apply_policy_to_stage(shadow_policy)
 
-    # Update experiment status
+    # Update experiment status; assignment_mode is set explicitly because
+    # legacy DBs backfill the column with DEFAULT 'cross_channel'
     with sqlite_conn() as conn:
         conn.execute(
             """
             UPDATE experiments_log
-            SET status = 'shadow_running', started_at = ?
+            SET status = 'shadow_running', started_at = ?, assignment_mode = 'interleave'
             WHERE id = ?
             """,
             (datetime.now(timezone.utc).isoformat(), experiment["id"]),

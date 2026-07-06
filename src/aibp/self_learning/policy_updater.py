@@ -151,8 +151,8 @@ def create_experiment(hypothesis: dict, current_policy: dict) -> int | None:
             """
             INSERT INTO experiments_log
                 (started_at, experiment_type, hypothesis, policy_before, policy_after,
-                 applies_to, status)
-            VALUES (?, ?, ?, ?, ?, 'stage', 'draft')
+                 applies_to, status, assignment_mode)
+            VALUES (?, ?, ?, ?, ?, 'stage', 'draft', 'interleave')
             """,
             (
                 datetime.now(timezone.utc).isoformat(),
