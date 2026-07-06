@@ -1,7 +1,8 @@
-"""Decision Engine — compare shadow vs control, decide promote/rollback.
+"""Decision Engine — compare variant vs control, decide promote/rollback.
 
-Daily cron: takes 'shadow_running' experiments older than 7 days,
-runs statistical test, decides promote or reject.
+Daily cron: takes 'shadow_running' experiments older than the experiment
+window (policy safety.experiment_window_days, default 14), estimates
+P(variant > control) via bootstrap (ADR-0008), decides promote or reject.
 """
 from __future__ import annotations
 
@@ -9,7 +10,6 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import structlog
-from scipy import stats as scipy_stats
 
 from aibp.self_learning.db import sqlite_conn, log_autopilot_event, get_snapshot_at_horizon
 from aibp.self_learning.safety import is_autopilot_paused, check_rate_limit
@@ -94,33 +94,39 @@ def compute_decision(
     control_rates: list[float],
     shadow_rates: list[float],
     exp_age_days: int,
+    promote_probability: float = 0.95,
+    min_effect: float = 0.05,
+    give_up_days: int = 14,
+    n_bootstrap: int = 4000,
 ) -> dict:
     """Pure function: given engagement data, return promote/reject/continue decision.
 
     This is separated from make_decision() for testability — no I/O, no SQLite,
     no time-dependent calls. All inputs are explicit.
 
-    Decision rules:
-        - If n < 5 in either group AND exp_age < 14 days → continue (wait for more data)
-        - If n < 5 in either group AND exp_age >= 14 days → reject (gave up waiting)
-        - If shadow_better_pct >= 10 AND p_value < 0.05 AND cohen_d > 0.3 → promote
-        - If shadow_better_pct < -5 → reject (clearly worse)
-        - Otherwise → reject (no significant improvement)
+    ADR-0008: the frequentist criterion (Welch p<0.05 + Cohen's d>0.3 + >=10%)
+    was practically unreachable at n≈14 posts per group — the autopilot could
+    never change anything. It is replaced by a bootstrap estimate of
+    P(shadow > control):
 
-    Args:
-        control_rates: list of engagement rates (views/subs) for control posts
-        shadow_rates: list of engagement rates for shadow posts
-        exp_age_days: age of experiment in days (used for insufficient-data decision)
+        - If n < 5 in either group AND exp_age < give_up_days → continue
+        - If n < 5 in either group AND exp_age >= give_up_days → reject (gave up)
+        - If P(shadow > control) >= promote_probability AND relative effect
+          >= min_effect → promote
+        - If relative effect < -min_effect AND P(shadow > control) <= 0.5
+          → reject (clearly worse)
+        - Otherwise → reject (no significant improvement)
 
     Returns:
         dict with keys: decision, reason, control_engagement, shadow_engagement,
-                        effect_size, p_value
+                        effect_size (relative effect, fraction),
+                        p_value (P(shadow > control), bootstrap probability)
     """
     import numpy as np
 
     # Insufficient data check
     if len(control_rates) < 5 or len(shadow_rates) < 5:
-        if exp_age_days < 14:
+        if exp_age_days < give_up_days:
             return {
                 "decision": "continue",
                 "reason": "insufficient_data_extending",
@@ -138,39 +144,41 @@ def compute_decision(
             "p_value": None,
         }
 
-    # Welch's t-test (does not assume equal variance)
-    t_stat, p_value = scipy_stats.ttest_ind(shadow_rates, control_rates, equal_var=False)
+    control = np.asarray(control_rates, dtype=float)
+    shadow = np.asarray(shadow_rates, dtype=float)
 
-    # Cohen's d for effect size (pooled standard deviation)
-    mean_diff = float(np.mean(shadow_rates) - np.mean(control_rates))
-    pooled_std = float(np.sqrt(
-        (np.var(shadow_rates, ddof=1) + np.var(control_rates, ddof=1)) / 2
-    ))
-    cohen_d = mean_diff / pooled_std if pooled_std > 0 else 0
+    control_mean = float(control.mean())
+    shadow_mean = float(shadow.mean())
+    rel_effect = (shadow_mean / control_mean - 1) if control_mean > 0 else 0.0
+    shadow_better_pct = rel_effect * 100
 
-    # How much better (or worse) is shadow vs control, in percent
-    control_mean = float(np.mean(control_rates))
-    shadow_mean = float(np.mean(shadow_rates))
-    shadow_better_pct = (shadow_mean / control_mean - 1) * 100 if control_mean > 0 else 0
+    # Bootstrap P(shadow > control): resample both groups with replacement,
+    # compare means. Seeded RNG → deterministic for identical inputs.
+    rng = np.random.default_rng(42)
+    control_means = rng.choice(control, size=(n_bootstrap, len(control))).mean(axis=1)
+    shadow_means = rng.choice(shadow, size=(n_bootstrap, len(shadow))).mean(axis=1)
+    p_shadow_better = float((shadow_means > control_means).mean())
 
     # Decision rules (order matters!)
-    if shadow_better_pct >= 10 and p_value < 0.05 and cohen_d > 0.3:
+    if p_shadow_better >= promote_probability and rel_effect >= min_effect:
         decision = "promote"
-        reason = f"shadow +{shadow_better_pct:.1f}%, p={p_value:.4f}, d={cohen_d:.2f}"
-    elif shadow_better_pct < -5:
+        reason = (f"shadow +{shadow_better_pct:.1f}%, "
+                  f"P(shadow>control)={p_shadow_better:.3f}")
+    elif rel_effect < -min_effect and p_shadow_better <= 0.5:
         decision = "reject"
         reason = f"shadow {shadow_better_pct:.1f}%, worse than control"
     else:
         decision = "reject"
-        reason = f"no significant improvement (+{shadow_better_pct:.1f}%, p={p_value:.4f})"
+        reason = (f"no significant improvement (+{shadow_better_pct:.1f}%, "
+                  f"P(shadow>control)={p_shadow_better:.3f})")
 
     return {
         "decision": decision,
         "reason": reason,
         "control_engagement": {"mean": control_mean, "n": len(control_rates)},
         "shadow_engagement": {"mean": shadow_mean, "n": len(shadow_rates)},
-        "effect_size": round(cohen_d, 3),
-        "p_value": round(p_value, 4),
+        "effect_size": round(rel_effect, 3),
+        "p_value": round(p_shadow_better, 4),
     }
 
 
@@ -192,7 +200,16 @@ def make_decision(experiment: dict) -> dict:
     exp_age_days = (datetime.now(timezone.utc) -
                     datetime.fromisoformat(experiment["started_at"])).days
 
-    return compute_decision(control_rates, shadow_rates, exp_age_days)
+    safety = load_policy().get("safety", {})
+    window_days = safety.get("experiment_window_days", 14)
+    return compute_decision(
+        control_rates,
+        shadow_rates,
+        exp_age_days,
+        promote_probability=safety.get("promote_probability", 0.95),
+        min_effect=safety.get("min_effect_pct", 5) / 100,
+        give_up_days=window_days + 7,
+    )
 
 
 def promote_experiment(experiment: dict, decision: dict) -> bool:

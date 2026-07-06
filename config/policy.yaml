@@ -86,6 +86,13 @@ safety:
   max_changes_per_week: 3
   max_rollbacks_per_week: 3
 
+  # Experiment decision criterion (ADR-0008)
+  # At 2 posts/day a 7-day window gives n≈14 per group — hard p-value
+  # thresholds never fired. Bootstrap P(variant > control) is used instead.
+  experiment_window_days: 14
+  promote_probability: 0.95   # promote when P(variant > control) >= this
+  min_effect_pct: 5           # ...and relative effect is at least this
+
   # Anomaly detection thresholds
   engagement_drop_24h_pct: 30   # freeze if >30% drop in 24h
   engagement_drop_7d_pct: 50    # freeze if >50% drop in 7d
