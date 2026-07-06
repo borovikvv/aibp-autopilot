@@ -243,6 +243,46 @@ def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterCl
 
 
 # ═══════════════════════════════════════════════════════════════════
+# CTA variants (issue #16)
+# ═══════════════════════════════════════════════════════════════════
+
+# CTA texts per variant. The variant name (not the text) is the policy
+# dimension: pattern miner proposes weight changes, decision engine measures
+# conversion per variant.
+CTA_TEMPLATES = {
+    "save_forward": "Сохраните пост — пригодится, когда дойдёте до внедрения. "
+                    "И перешлите коллеге, который этим занимается.",
+    "affiliate_link": "Детали, тарифы и ограничения — по ссылке ниже.",
+    "comment_prompt": "Пробовали похожее у себя? Расскажите в комментариях, что сработало.",
+}
+
+
+def select_cta_variant(policy: dict) -> str | None:
+    """Sample one CTA variant according to policy weights. None disables CTA."""
+    weights = policy.get("cta_variants") or {}
+    valid = {
+        k: float(v) for k, v in weights.items()
+        if k in CTA_TEMPLATES and isinstance(v, (int, float)) and v > 0
+    }
+    if not valid:
+        return None
+    import random
+    return random.choices(list(valid.keys()), weights=list(valid.values()))[0]
+
+
+def append_cta(post: str, variant: str) -> str:
+    """Insert the CTA paragraph before the final source link."""
+    text = CTA_TEMPLATES.get(variant)
+    if not text:
+        return post
+    cta_html = f"<i>{text}</i>"
+    lines = post.rstrip().rsplit("\n", 1)
+    if len(lines) == 2 and "Источник" in lines[1]:
+        return f"{lines[0]}\n{cta_html}\n\n{lines[1]}"
+    return f"{post.rstrip()}\n\n{cta_html}"
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Click tracking (issue #15)
 # ═══════════════════════════════════════════════════════════════════
 
@@ -352,6 +392,14 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     if scheduled <= now_msk:
         scheduled += timedelta(hours=1)
 
+    # CTA variant — prod only (that's where conversion is measured)
+    cta_variant = None
+    if pipeline_env == "prod":
+        cta_variant = select_cta_variant(policy)
+        if cta_variant:
+            post = append_cta(post, cta_variant)
+            log.info("cta_appended", variant=cta_variant, candidate_id=candidate["id"])
+
     summary = parse_summary(candidate.get("summary"))
     summary_patch = {
         "hermes": True,
@@ -360,6 +408,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         "strategy_rubric": summary.get("editorial", {}).get("strategy_rubric"),
         "policy_version": policy.get("version", "unknown"),
         "pipeline_env": pipeline_env,
+        "cta_variant": cta_variant,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -427,6 +476,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 scheduled_at = %s,
                 used_as = %s,
                 campaign_tag = %s,
+                cta_variant = %s,
                 need_image = false,
                 summary = COALESCE(summary, '{}'::jsonb) || %s::jsonb,
                 updated_at = now()
@@ -437,6 +487,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 scheduled.astimezone(timezone.utc),
                 f"{slot}_post",
                 slot,
+                cta_variant,
                 json.dumps(summary_patch, ensure_ascii=False),
                 candidate["id"],
             ),

@@ -122,19 +122,35 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
   {% if ctr.posts %}
   <table>
     <tr>
-      <th>Post</th><th>Slot</th><th>Policy</th><th>Views (48h)</th><th>Clicks</th><th>CTR</th>
+      <th>Post</th><th>Slot</th><th>Policy</th><th>CTA</th><th>Views (48h)</th><th>Clicks</th><th>CTR</th>
     </tr>
     {% for p in ctr.posts %}
     <tr>
       <td>{{ p.feed_item_id }}</td>
       <td>{{ p.slot }}</td>
       <td><code>{{ p.policy_version[:12] }}</code></td>
+      <td>{{ p.cta_variant }}</td>
       <td>{{ p.views if p.views is not none else '—' }}</td>
       <td>{{ p.clicks }}</td>
       <td>{{ '%.2f%%'|format(p.ctr * 100) if p.ctr is not none else '—' }}</td>
     </tr>
     {% endfor %}
   </table>
+  {% if ctr.by_cta %}
+  <h3>Conversion by CTA variant</h3>
+  <table>
+    <tr><th>CTA variant</th><th>Posts</th><th>Views (48h)</th><th>Clicks</th><th>CTR</th></tr>
+    {% for row in ctr.by_cta %}
+    <tr>
+      <td>{{ row.cta_variant }}</td>
+      <td>{{ row.n_posts }}</td>
+      <td>{{ row.views }}</td>
+      <td>{{ row.clicks }}</td>
+      <td>{{ '%.2f%%'|format(row.ctr * 100) if row.ctr is not none else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
   {% if ctr.by_policy %}
   <h3>CTR by policy version</h3>
   <table>
@@ -272,7 +288,7 @@ def get_ctr_stats(days: int = 30) -> dict:
     with sqlite_conn() as conn:
         rows = conn.execute(
             """
-            SELECT feed_item_id, slot, policy_version
+            SELECT feed_item_id, slot, policy_version, cta_variant
             FROM post_features
             WHERE posted_at >= ? AND target_channel = 'main'
             ORDER BY posted_at DESC
@@ -289,6 +305,7 @@ def get_ctr_stats(days: int = 30) -> dict:
             "feed_item_id": r["feed_item_id"],
             "slot": r["slot"],
             "policy_version": r["policy_version"] or "",
+            "cta_variant": r["cta_variant"] or "none",
             "views": views,
             "clicks": clicks,
             "ctr": (clicks / views) if views else None,
@@ -306,7 +323,23 @@ def get_ctr_stats(days: int = 30) -> dict:
     for agg in by_policy.values():
         agg["ctr"] = (agg["clicks"] / agg["views"]) if agg["views"] else None
 
-    return {"posts": posts[:15], "by_policy": list(by_policy.values())}
+    by_cta: dict[str, dict] = {}
+    for p in posts:
+        agg = by_cta.setdefault(
+            p["cta_variant"], {"cta_variant": p["cta_variant"],
+                               "n_posts": 0, "views": 0, "clicks": 0}
+        )
+        agg["n_posts"] += 1
+        agg["views"] += p["views"] or 0
+        agg["clicks"] += p["clicks"]
+    for agg in by_cta.values():
+        agg["ctr"] = (agg["clicks"] / agg["views"]) if agg["views"] else None
+
+    return {
+        "posts": posts[:15],
+        "by_policy": list(by_policy.values()),
+        "by_cta": list(by_cta.values()),
+    }
 
 
 def get_recent_events(limit: int = 20) -> list[dict]:

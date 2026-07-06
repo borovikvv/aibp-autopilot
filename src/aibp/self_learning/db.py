@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS post_features (
     has_image         INTEGER,
     visual_kind       TEXT,
     scheduled_hour    INTEGER,
+    cta_variant       TEXT,
     policy_version    TEXT NOT NULL,
     policy_blob       TEXT NOT NULL
 );
@@ -137,6 +138,7 @@ def sqlite_conn() -> Iterator[sqlite3.Connection]:
 # existing tables, so init_db() backfills them on already-deployed DBs.
 _COLUMN_MIGRATIONS = [
     ("experiments_log", "assignment_mode", "TEXT NOT NULL DEFAULT 'cross_channel'"),
+    ("post_features", "cta_variant", "TEXT"),
 ]
 
 

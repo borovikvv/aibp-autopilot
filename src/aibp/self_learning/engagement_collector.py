@@ -385,6 +385,7 @@ def extract_features_for_post(item: dict) -> dict:
         "has_image": 1 if item.get("image_url") else 0,
         "visual_kind": summary.get("visual_kind"),
         "scheduled_hour": scheduled_hour,
+        "cta_variant": summary.get("cta_variant"),
         "policy_version": summary.get("policy_version", "unknown"),
         "policy_blob": json.dumps(summary, ensure_ascii=False),
     }
@@ -462,8 +463,9 @@ async def run_async() -> int:
                         (feed_item_id, posted_at, slot, pipeline_env, target_channel,
                          strategy_rubric, topic_cluster, source_domain, source_url,
                          char_count, paragraph_count, bold_count, emoji_count,
-                         has_image, visual_kind, scheduled_hour, policy_version, policy_blob)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         has_image, visual_kind, scheduled_hour, cta_variant,
+                         policy_version, policy_blob)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     tuple(features.values()),
                 )

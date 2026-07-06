@@ -44,6 +44,15 @@ post_params:
     max_emoji: 0
     scheduled_hour_msk: 19
 
+# ─── CTA Variants (monetization funnel) ─────────────────────────────
+# Applied at generation: one CTA variant is sampled by weight and appended
+# to prod posts. Logged to post_features.cta_variant so pattern miner and
+# decision engine can optimize conversion (clicks/views), not just style.
+cta_variants:
+  save_forward: 1.0      # save/forward prompt (retention)
+  affiliate_link: 1.0    # push to the tracked source/offer link (revenue)
+  comment_prompt: 1.0    # discussion prompt (engagement signal)
+
 # ─── 3. Regex Gates (auto-populated by self-learning) ─────────────
 # Each entry: {name, pattern, slot, action}
 # action: warn | fail

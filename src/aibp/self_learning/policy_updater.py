@@ -81,6 +81,15 @@ def validate_change_spec(hypothesis: dict, current_policy: dict) -> tuple[bool, 
             return False, f"invalid regex: {e}"
         return True, "ok"
 
+    if exp_type == "cta":
+        variant = spec.get("variant")
+        if variant not in current_policy.get("cta_variants", {}):
+            return False, f"unknown cta variant: {variant}"
+        weight = spec.get("new_weight")
+        if not isinstance(weight, (int, float)) or weight < 0 or weight > 3:
+            return False, f"weight out of range (0-3): {weight}"
+        return True, "ok"
+
     if exp_type == "visual":
         return True, "ok"
 
@@ -111,6 +120,9 @@ def apply_change_to_policy(policy: dict, hypothesis: dict) -> dict:
             "action": spec.get("action", "warn"),
             "slot": spec.get("slot", "all"),
         })
+
+    elif exp_type == "cta":
+        new_policy.setdefault("cta_variants", {})[spec["variant"]] = spec["new_weight"]
 
     elif exp_type == "visual":
         param = spec["param"]

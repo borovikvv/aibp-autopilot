@@ -33,7 +33,7 @@ def load_post_data(days: int = 7) -> list[dict]:
             SELECT pf.feed_item_id, pf.posted_at, pf.slot, pf.target_channel,
                    pf.strategy_rubric, pf.topic_cluster, pf.source_domain,
                    pf.char_count, pf.paragraph_count, pf.bold_count, pf.emoji_count,
-                   pf.has_image, pf.scheduled_hour, pf.policy_version
+                   pf.has_image, pf.scheduled_hour, pf.cta_variant, pf.policy_version
             FROM post_features pf
             WHERE pf.posted_at >= ?
               AND pf.target_channel = 'main'
@@ -82,6 +82,17 @@ def compute_statistical_baseline(posts: list[dict], slot: str | None = None) -> 
     result["rubric_stats"] = {
         r: {"n": len(ers), "mean_engagement": sum(ers) / len(ers)}
         for r, ers in rubric_groups.items() if len(ers) >= 2
+    }
+
+    # Group by CTA variant (monetization funnel, issue #16)
+    cta_groups: dict[str, list[float]] = {}
+    for p, er in zip(posts, engagement_rates):
+        variant = p.get("cta_variant") or "none"
+        cta_groups.setdefault(variant, []).append(er)
+
+    result["cta_stats"] = {
+        v: {"n": len(ers), "mean_engagement": sum(ers) / len(ers)}
+        for v, ers in cta_groups.items() if len(ers) >= 2
     }
 
     # Correlation: char_count vs engagement
@@ -163,16 +174,20 @@ Analyze the past week's data and propose 3-5 hypotheses for improving engagement
 
 Return JSON array of 3-5 hypotheses. Each hypothesis:
 {{
-  "experiment_type": "rubric_weight" | "post_param" | "regex_gate" | "source_score" | "visual",
+  "experiment_type": "rubric_weight" | "post_param" | "regex_gate" | "source_score" | "visual" | "cta",
   "hypothesis": "natural language description of what to change",
   "change_spec": {{
     "rubric": "anti_hype",
     "new_weight": 1.3
   }},
-  "expected_effect": "+10% engagement",
+  "expected_effect": "+25% engagement",
   "confidence": 0.0-1.0,
   "target_metric": "views_per_subscriber"
 }}
+
+For "cta" experiments change_spec is {{"variant": "affiliate_link", "new_weight": 1.5}} —
+variants come from policy cta_variants; target_metric may be "clicks_per_view"
+(conversion) when cta_stats show a difference.
 
 Only propose changes that are supported by the data. Be conservative.
 Return ONLY the JSON array, no other text.
