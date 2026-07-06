@@ -180,12 +180,24 @@ def select_candidate(slot: str, policy: dict, pipeline_env: str = "prod") -> dic
     if not slot_filtered:
         slot_filtered = candidates
 
+    # Thompson sampling multipliers (issue #18): the bandit nudges rubric
+    # weights within [0.5x, 1.5x] per post, learning from every published
+    # post instead of waiting for weekly experiments. Selection must not
+    # fail if the bandit state is unavailable.
+    bandit_multipliers: dict[str, float] = {}
+    if pipeline_env == "prod" and rubric_weights:
+        try:
+            from aibp.self_learning.bandit import sample_rubric_multipliers
+            bandit_multipliers = sample_rubric_multipliers(list(rubric_weights))
+        except Exception as e:
+            log.warning("bandit_unavailable", error=str(e))
+
     # Apply rubric weights
     def weighted_score(c: dict) -> float:
         summary = parse_summary(c.get("summary"))
         editorial = summary.get("editorial", {})
         rubric = editorial.get("strategy_rubric", "")
-        weight = rubric_weights.get(rubric, 1.0)
+        weight = rubric_weights.get(rubric, 1.0) * bandit_multipliers.get(rubric, 1.0)
         base = float(c.get("rank_score", 50))
         return base * weight
 

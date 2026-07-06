@@ -100,6 +100,24 @@ CREATE TABLE IF NOT EXISTS prompt_changes (
     FOREIGN KEY (experiment_id) REFERENCES experiments_log(id)
 );
 
+CREATE TABLE IF NOT EXISTS bandit_arms (
+    dimension   TEXT NOT NULL,
+    arm_id      TEXT NOT NULL,
+    alpha       REAL NOT NULL DEFAULT 1,
+    beta        REAL NOT NULL DEFAULT 1,
+    updated_at  TIMESTAMP,
+    PRIMARY KEY (dimension, arm_id)
+);
+
+CREATE TABLE IF NOT EXISTS bandit_observations (
+    feed_item_id INTEGER NOT NULL,
+    dimension    TEXT NOT NULL,
+    arm_id       TEXT NOT NULL,
+    success      INTEGER NOT NULL,
+    observed_at  TIMESTAMP NOT NULL,
+    PRIMARY KEY (feed_item_id, dimension)
+);
+
 CREATE TABLE IF NOT EXISTS autopilot_events (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     event_at          TIMESTAMP NOT NULL,

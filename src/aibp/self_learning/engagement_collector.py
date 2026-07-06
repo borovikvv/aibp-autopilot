@@ -528,6 +528,15 @@ async def run_async() -> int:
         failed=metrics_failed,
         method="copyMessage" if metrics_chat_id else "getUpdates",
     )
+
+    # Feed the bandit (issue #18): posts past the 48h horizon are scored
+    # against the trailing median. Never fail the collection run over it.
+    try:
+        from aibp.self_learning.bandit import update_from_engagement
+        update_from_engagement()
+    except Exception as e:
+        log.warning("bandit_update_failed", error=str(e))
+
     return 0
 
 
