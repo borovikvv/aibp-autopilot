@@ -8,10 +8,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
 
 import structlog
 
@@ -163,7 +163,7 @@ def save_policy_version(
             """,
             (
                 version,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
                 created_by,
                 parent_version,
                 yaml_content,
@@ -184,7 +184,7 @@ def log_autopilot_event(event_type: str, experiment_id: int | None = None, detai
             VALUES (?, ?, ?, ?)
             """,
             (
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
                 event_type,
                 experiment_id,
                 json.dumps(details, ensure_ascii=False) if details else None,

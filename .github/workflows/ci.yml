@@ -1,0 +1,41 @@
+name: CI
+
+# Запускается автоматически на каждый push в main и на каждый Pull Request.
+# Что делает:
+#   1. Устанавливает Python 3.12
+#   2. Ставит зависимости из requirements.txt + dev-зависимости (ruff, pytest)
+#   3. Запускает линтер (ruff) — проверяет стиль кода
+#   4. Запускает все тесты (pytest)
+# Если что-то падает — ты видишь красный крестик на коммите в GitHub.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff pytest pytest-asyncio
+
+      - name: Lint with ruff
+        run: ruff check src/ tests/
+
+      - name: Run tests
+        env:
+          PYTHONPATH: src
+        run: pytest tests/ -v --tb=short

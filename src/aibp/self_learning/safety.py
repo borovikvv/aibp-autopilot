@@ -5,13 +5,12 @@ checks, autopilot can destroy the channel by making bad changes.
 """
 from __future__ import annotations
 
-import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
 import yaml
 
-from aibp.self_learning.db import sqlite_conn, log_autopilot_event
+from aibp.self_learning.db import log_autopilot_event, sqlite_conn
 from aibp.utils.config import PROJECT_ROOT, load_policy
 
 log = structlog.get_logger()
@@ -30,7 +29,7 @@ def pause_autopilot(reason: str) -> None:
     policy = load_policy()
     policy["autopilot_paused"] = True
     policy["_pause_reason"] = reason
-    policy["_paused_at"] = datetime.now(timezone.utc).isoformat()
+    policy["_paused_at"] = datetime.now(UTC).isoformat()
 
     with open(POLICY_PATH, "w", encoding="utf-8") as f:
         yaml.dump(policy, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
@@ -82,7 +81,7 @@ def check_rate_limit(action_type: str = "change_applied") -> tuple[bool, str]:
     max_per_day = safety.get("max_changes_per_day", 1)
     max_per_week = safety.get("max_changes_per_week", 3)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     day_ago = now - timedelta(days=1)
     week_ago = now - timedelta(days=7)
 
@@ -114,7 +113,7 @@ def get_recent_engagement_stats(days: int = 7) -> dict:
             WHERE em.measured_at >= ?
               AND pf.target_channel = 'main'
             """,
-            ((datetime.now(timezone.utc) - timedelta(days=days)).isoformat(),),
+            ((datetime.now(UTC) - timedelta(days=days)).isoformat(),),
         ).fetchone()
         return dict(rows) if rows else {}
 
@@ -164,7 +163,7 @@ def check_kill_switch() -> tuple[bool, str | None]:
     policy = load_policy()
     max_rollbacks = policy.get("safety", {}).get("max_rollbacks_per_week", 3)
 
-    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    week_ago = datetime.now(UTC) - timedelta(days=7)
     rollback_count = count_events("rollback", week_ago)
 
     if rollback_count >= max_rollbacks:

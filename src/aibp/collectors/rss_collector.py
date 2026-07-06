@@ -6,23 +6,26 @@ from __future__ import annotations
 
 import hashlib
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import feedparser
 import structlog
 from dateutil import parser as date_parser
 
-from aibp.db.connection import db_conn, fetch_one, execute_returning
+from aibp.db.connection import execute_returning, fetch_one
 from aibp.utils.config import load_rss_feeds
 
 log = structlog.get_logger()
 
 
 def _extract_domain(url: str) -> str:
-    """Extract domain from URL."""
+    """Extract domain from URL, stripping leading 'www.'."""
     parsed = urlparse(url)
-    return parsed.netloc.lower().lstrip("www.")
+    domain = parsed.netloc.lower()
+    # Use regex to strip only leading 'www.' (B005: avoid multi-char strip)
+    import re
+    return re.sub(r"^www\.", "", domain)
 
 
 def _parse_date(entry: dict) -> datetime | None:
@@ -31,14 +34,14 @@ def _parse_date(entry: dict) -> datetime | None:
         if entry.get(field_name):
             try:
                 t = entry[field_name]
-                return datetime(*t[:6], tzinfo=timezone.utc)
+                return datetime(*t[:6], tzinfo=UTC)
             except (TypeError, ValueError):
                 continue
     for field_name in ("published", "updated"):
         raw = entry.get(field_name)
         if raw:
             try:
-                return date_parser.parse(raw).astimezone(timezone.utc)
+                return date_parser.parse(raw).astimezone(UTC)
             except (ValueError, TypeError):
                 continue
     return None
@@ -80,7 +83,7 @@ def collect_feed(feed: dict, settings: dict) -> int:
         return 0
 
     new_count = 0
-    cutoff = datetime.now(timezone.utc).timestamp() - (max_age_days * 86400)
+    cutoff = datetime.now(UTC).timestamp() - (max_age_days * 86400)
 
     for entry in parsed.entries[:max_items]:
         link = entry.get("link")

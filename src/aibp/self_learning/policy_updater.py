@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
 import structlog
 import yaml
 
-from aibp.self_learning.db import sqlite_conn, save_policy_version, log_autopilot_event
+from aibp.self_learning.db import save_policy_version, sqlite_conn
 from aibp.self_learning.safety import is_autopilot_paused
 from aibp.utils.config import PROJECT_ROOT, load_policy
 
@@ -155,7 +154,7 @@ def create_experiment(hypothesis: dict, current_policy: dict) -> int | None:
             VALUES (?, ?, ?, ?, ?, 'stage', 'draft')
             """,
             (
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
                 hypothesis["experiment_type"],
                 hypothesis.get("hypothesis", ""),
                 current_policy.get("version", "unknown"),

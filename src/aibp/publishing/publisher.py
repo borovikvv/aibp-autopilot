@@ -5,13 +5,11 @@ Cron: every 5 minutes via Hermes.
 from __future__ import annotations
 
 import asyncio
-import json
-from datetime import datetime, timezone
 
 import httpx
 import structlog
 
-from aibp.db.connection import fetch_all, execute, fetch_one
+from aibp.db.connection import execute, fetch_all
 from aibp.utils.config import get_settings
 
 log = structlog.get_logger()

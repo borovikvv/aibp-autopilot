@@ -6,14 +6,14 @@ runs statistical test, decides promote or reject.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from scipy import stats as scipy_stats
 
-from aibp.self_learning.db import sqlite_conn, log_autopilot_event
-from aibp.self_learning.safety import is_autopilot_paused, check_rate_limit
-from aibp.utils.config import PROJECT_ROOT, load_policy
+from aibp.self_learning.db import log_autopilot_event, sqlite_conn
+from aibp.self_learning.safety import check_rate_limit, is_autopilot_paused
+from aibp.utils.config import PROJECT_ROOT
 
 log = structlog.get_logger()
 
@@ -22,7 +22,7 @@ POLICY_PATH = PROJECT_ROOT / "config" / "policy.yaml"
 
 def get_ready_experiments() -> list[dict]:
     """Get shadow_running experiments older than 7 days."""
-    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    week_ago = (datetime.now(UTC) - timedelta(days=7)).isoformat()
     with sqlite_conn() as conn:
         rows = conn.execute(
             """
@@ -104,16 +104,28 @@ def compute_decision(
             return {
                 "decision": "continue",
                 "reason": "insufficient_data_extending",
-                "control_engagement": {"mean": float(np.mean(control_rates)) if control_rates else 0, "n": len(control_rates)},
-                "shadow_engagement": {"mean": float(np.mean(shadow_rates)) if shadow_rates else 0, "n": len(shadow_rates)},
+                "control_engagement": {
+                    "mean": float(np.mean(control_rates)) if control_rates else 0,
+                    "n": len(control_rates),
+                },
+                "shadow_engagement": {
+                    "mean": float(np.mean(shadow_rates)) if shadow_rates else 0,
+                    "n": len(shadow_rates),
+                },
                 "effect_size": None,
                 "p_value": None,
             }
         return {
             "decision": "reject",
             "reason": "insufficient_data_after_14d",
-            "control_engagement": {"mean": float(np.mean(control_rates)) if control_rates else 0, "n": len(control_rates)},
-            "shadow_engagement": {"mean": float(np.mean(shadow_rates)) if shadow_rates else 0, "n": len(shadow_rates)},
+            "control_engagement": {
+                "mean": float(np.mean(control_rates)) if control_rates else 0,
+                "n": len(control_rates),
+            },
+            "shadow_engagement": {
+                "mean": float(np.mean(shadow_rates)) if shadow_rates else 0,
+                "n": len(shadow_rates),
+            },
             "effect_size": None,
             "p_value": None,
         }
@@ -166,7 +178,7 @@ def make_decision(experiment: dict) -> dict:
     control_rates = compute_engagement_rates(control_posts)
     shadow_rates = compute_engagement_rates(shadow_posts)
 
-    exp_age_days = (datetime.now(timezone.utc) -
+    exp_age_days = (datetime.now(UTC) -
                     datetime.fromisoformat(experiment["started_at"])).days
 
     return compute_decision(control_rates, shadow_rates, exp_age_days)
@@ -189,7 +201,6 @@ def promote_experiment(experiment: dict, decision: dict) -> bool:
             return False
 
     # Apply to production policy.yaml
-    from aibp.self_learning.policy_updater import apply_policy_to_stage
     prod_policy = json.loads(row["json_blob"])
     prod_policy["version"] = experiment["policy_after"]
 
@@ -212,7 +223,7 @@ def promote_experiment(experiment: dict, decision: dict) -> bool:
             WHERE id = ?
             """,
             (
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
                 json.dumps(decision["control_engagement"]),
                 json.dumps(decision["shadow_engagement"]),
                 decision["effect_size"],
@@ -244,7 +255,7 @@ def reject_experiment(experiment: dict, decision: dict) -> None:
             WHERE id = ?
             """,
             (
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
                 json.dumps(decision.get("control_engagement", {})),
                 json.dumps(decision.get("shadow_engagement", {})),
                 decision.get("effect_size"),

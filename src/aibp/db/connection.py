@@ -5,8 +5,9 @@ Direct psycopg2 with parameterized queries. No n8n DB gateway.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
 
 import psycopg2
 import psycopg2.extras

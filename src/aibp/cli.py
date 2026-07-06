@@ -1,8 +1,9 @@
 """AIBP CLI — unified entry point for all operations."""
 from __future__ import annotations
 
-import click
 import sys
+
+import click
 
 from aibp.observability.logging import configure_logging
 

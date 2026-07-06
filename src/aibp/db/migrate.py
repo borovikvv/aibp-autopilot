@@ -16,9 +16,8 @@ Usage:
 from __future__ import annotations
 
 import importlib
-import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -94,7 +93,7 @@ def apply_migrations() -> list[str]:
                 # Record as applied
                 cur.execute(
                     "INSERT INTO _migrations (name, applied_at) VALUES (%s, %s)",
-                    (name, datetime.now(timezone.utc)),
+                    (name, datetime.now(UTC)),
                 )
             newly_applied.append(name)
             log.info("applied", migration=name)

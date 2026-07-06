@@ -4,10 +4,10 @@ Issue #9: these functions were untested.
   - select_candidate: filters candidates by slot, applies rubric weights for sorting
   - apply_change_to_policy: applies change_spec to policy dict for each experiment_type
 """
+import copy
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-import copy
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from aibp.self_learning.policy_updater import apply_change_to_policy, validate_change_spec
 from aibp.utils.summary import parse_summary
-
 
 # ═══════════════════════════════════════════════════════════════════
 # Test policy fixture

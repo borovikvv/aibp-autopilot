@@ -5,8 +5,7 @@ Cron: weekly (Sun 22:00 MSK).
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from scipy import stats as scipy_stats
@@ -41,7 +40,7 @@ def load_post_data(days: int = 7) -> list[dict]:
               AND pf.target_channel = 'main'
             ORDER BY pf.posted_at DESC
             """,
-            ((datetime.now(timezone.utc) - timedelta(days=days)).isoformat(),),
+            ((datetime.now(UTC) - timedelta(days=days)).isoformat(),),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -127,15 +126,20 @@ def llm_pattern_mine(stats: dict, posts: list[dict], client: OpenRouterClient, p
     stats_json = json.dumps(stats, indent=2, ensure_ascii=False, default=str)
     policy_json = json.dumps(policy, indent=2, ensure_ascii=False, default=str)
 
+    feature_keys = (
+        'strategy_rubric', 'char_count', 'paragraph_count',
+        'has_image', 'scheduled_hour',
+    )
+
     top_summaries = []
     for p in top:
-        features = {k: v for k, v in p.items() if k in ('strategy_rubric', 'char_count', 'paragraph_count', 'has_image', 'scheduled_hour')}
+        features = {k: v for k, v in p.items() if k in feature_keys}
         top_summaries.append({"features": features, "views": p.get('latest_views')})
     top_json = json.dumps(top_summaries, indent=2, ensure_ascii=False, default=str)
 
     bottom_summaries = []
     for p in bottom:
-        features = {k: v for k, v in p.items() if k in ('strategy_rubric', 'char_count', 'paragraph_count', 'has_image', 'scheduled_hour')}
+        features = {k: v for k, v in p.items() if k in feature_keys}
         bottom_summaries.append({"features": features, "views": p.get('latest_views')})
     bottom_json = json.dumps(bottom_summaries, indent=2, ensure_ascii=False, default=str)
 

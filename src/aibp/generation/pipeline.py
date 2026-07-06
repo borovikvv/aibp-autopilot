@@ -6,13 +6,13 @@ For shadow testing: stage generation uses policy.stage.yaml and publishes to tes
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import structlog
 from jinja2 import Template
 
-from aibp.db.connection import fetch_all, fetch_one, execute, execute_returning
+from aibp.db.connection import execute, fetch_all
 from aibp.enrichment.llm_client import OpenRouterClient
 from aibp.generation.quality_gate import validate_post
 from aibp.utils.config import load_policy
@@ -322,7 +322,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         "strategy_rubric": summary.get("editorial", {}).get("strategy_rubric"),
         "policy_version": policy.get("version", "unknown"),
         "pipeline_env": pipeline_env,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
     }
 
     if pipeline_env == "stage":
@@ -362,7 +362,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 candidate["id"],
                 json.dumps(summary_patch, ensure_ascii=False),
                 post,
-                scheduled.astimezone(timezone.utc),
+                scheduled.astimezone(UTC),
                 f"{slot}_stage_shadow",
                 f"{slot}_stage",
                 candidate["id"],
@@ -395,7 +395,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
             """,
             (
                 post,
-                scheduled.astimezone(timezone.utc),
+                scheduled.astimezone(UTC),
                 f"{slot}_post",
                 slot,
                 json.dumps(summary_patch, ensure_ascii=False),

@@ -5,14 +5,13 @@ Supports: chat, chat_json, with retry and cost tracking.
 from __future__ import annotations
 
 import json
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 import structlog
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from aibp.utils.config import PROJECT_ROOT, get_settings
 
@@ -29,7 +28,7 @@ COST_TABLE: dict[str, dict[str, float]] = {
 }
 
 
-class BudgetExceeded(Exception):
+class BudgetExceededError(Exception):
     """Raised when daily LLM budget is exceeded."""
 
 
@@ -53,7 +52,7 @@ class OpenRouterClient:
         # Daily-rotated cost log: llm_cost_YYYYMMDD.jsonl
         self._cost_log_dir = PROJECT_ROOT / "reports"
         self._cost_log_dir.mkdir(parents=True, exist_ok=True)
-        self._today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+        self._today_str = datetime.now(UTC).strftime("%Y%m%d")
         self.cost_log = self._cost_log_dir / f"llm_cost_{self._today_str}.jsonl"
 
         if not self.api_key:
@@ -61,7 +60,7 @@ class OpenRouterClient:
 
     def _get_today_cost_log(self) -> Path:
         """Get today's cost log path, rotating if date changed."""
-        today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        today = datetime.now(UTC).strftime("%Y%m%d")
         if today != self._today_str:
             self._today_str = today
             self.cost_log = self._cost_log_dir / f"llm_cost_{today}.jsonl"
@@ -92,7 +91,7 @@ class OpenRouterClient:
     def _log_cost(self, model: str, input_tokens: int, output_tokens: int, cost: float) -> None:
         """Append cost record to today's JSONL log."""
         record = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "model": model,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -123,7 +122,7 @@ class OpenRouterClient:
                 except json.JSONDecodeError:
                     continue
         if total >= self.daily_budget:
-            raise BudgetExceeded(
+            raise BudgetExceededError(
                 f"Daily budget ${self.daily_budget} exceeded (${total:.2f} used today)"
             )
 

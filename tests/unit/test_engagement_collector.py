@@ -1,7 +1,7 @@
 """Tests for engagement_collector — parsing, 409 handling, method selection."""
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -9,13 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from aibp.self_learning.engagement_collector import (
     _parse_chat_id,
+    collect_engagement_for_post,
+    extract_features_for_post,
     get_chat_members_count,
     get_views_via_copy,
     get_views_via_updates,
-    collect_engagement_for_post,
-    extract_features_for_post,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════
 # _parse_chat_id

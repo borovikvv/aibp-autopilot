@@ -18,8 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 import httpx
 import structlog
@@ -503,7 +502,7 @@ async def run_async() -> int:
                     """,
                     (
                         item["id"],
-                        datetime.now(timezone.utc).isoformat(),
+                        datetime.now(UTC).isoformat(),
                         metrics["views"],
                         metrics["forwards"],
                         metrics["replies"],

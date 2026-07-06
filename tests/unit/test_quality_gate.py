@@ -5,7 +5,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from aibp.generation.quality_gate import validate_post, FORBIDDEN_RE, CLICHE_RE, SOURCE_FRAMING_RE
+from aibp.generation.quality_gate import CLICHE_RE, FORBIDDEN_RE, SOURCE_FRAMING_RE, validate_post
 
 
 def test_valid_morning_post_passes():

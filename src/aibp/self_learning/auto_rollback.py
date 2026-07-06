@@ -5,16 +5,15 @@ Daily cron: checks promoted experiments, rolls back if engagement drops.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 import structlog
 import yaml
 
-from aibp.self_learning.db import sqlite_conn, log_autopilot_event
+from aibp.publishing.publisher import send_message
+from aibp.self_learning.db import log_autopilot_event, sqlite_conn
 from aibp.self_learning.safety import pause_autopilot
 from aibp.utils.config import PROJECT_ROOT, get_settings, load_policy
-from aibp.publishing.publisher import send_message
 
 log = structlog.get_logger()
 POLICY_PATH = PROJECT_ROOT / "config" / "policy.yaml"
@@ -22,7 +21,7 @@ POLICY_PATH = PROJECT_ROOT / "config" / "policy.yaml"
 
 def get_promoted_experiments_in_window(hours: int) -> list[dict]:
     """Get experiments promoted within the last N hours."""
-    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    since = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
     with sqlite_conn() as conn:
         rows = conn.execute(
             """
@@ -46,7 +45,7 @@ def get_avg_engagement_for_policy(policy_version: str, days: int) -> float | Non
             WHERE pf.policy_version = ?
               AND em.measured_at >= ?
             """,
-            (policy_version, (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()),
+            (policy_version, (datetime.now(UTC) - timedelta(days=days)).isoformat()),
         ).fetchone()
         return row["avg_rate"] if row and row["avg_rate"] is not None else None
 
@@ -91,7 +90,7 @@ def rollback_experiment(experiment: dict, reason: str) -> None:
                 rollback_reason = ?
             WHERE id = ?
             """,
-            (datetime.now(timezone.utc).isoformat(), reason, experiment["id"]),
+            (datetime.now(UTC).isoformat(), reason, experiment["id"]),
         )
 
     log_autopilot_event("rollback", experiment_id=experiment["id"], details={"reason": reason})

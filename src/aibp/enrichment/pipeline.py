@@ -5,11 +5,11 @@ Cron: every 2h via Hermes.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
-from aibp.db.connection import fetch_all, execute
+from aibp.db.connection import execute, fetch_all
 from aibp.enrichment.llm_client import OpenRouterClient
 from aibp.utils.config import load_policy
 
@@ -119,7 +119,7 @@ def run() -> int:
 
         summary = {
             "editorial": result,
-            "enriched_at": datetime.now(timezone.utc).isoformat(),
+            "enriched_at": datetime.now(UTC).isoformat(),
             "enrichment_version": "v1",
         }
 

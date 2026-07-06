@@ -1,11 +1,11 @@
 """Tests for RSS collector."""
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from aibp.collectors.rss_collector import _extract_domain, _parse_date, _extract_text
+from aibp.collectors.rss_collector import _extract_domain, _extract_text, _parse_date
 
 
 def test_extract_domain():

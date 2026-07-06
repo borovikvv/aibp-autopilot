@@ -5,13 +5,13 @@ Daily cron: takes 'draft' experiments, applies to stage prompt, marks 'shadow_ru
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
 import yaml
 
-from aibp.self_learning.db import sqlite_conn, log_autopilot_event
-from aibp.self_learning.safety import is_autopilot_paused, check_rate_limit
+from aibp.self_learning.db import log_autopilot_event, sqlite_conn
+from aibp.self_learning.safety import check_rate_limit, is_autopilot_paused
 from aibp.utils.config import PROJECT_ROOT
 
 log = structlog.get_logger()
@@ -83,7 +83,7 @@ def start_shadow(experiment: dict) -> bool:
             SET status = 'shadow_running', started_at = ?
             WHERE id = ?
             """,
-            (datetime.now(timezone.utc).isoformat(), experiment["id"]),
+            (datetime.now(UTC).isoformat(), experiment["id"]),
         )
 
     log_autopilot_event("change_applied", experiment_id=experiment["id"],
@@ -94,7 +94,7 @@ def start_shadow(experiment: dict) -> bool:
 
 def check_expired_shadows() -> None:
     """Mark shadow experiments older than 7 days as ready for decision."""
-    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    week_ago = (datetime.now(UTC) - timedelta(days=7)).isoformat()
     with sqlite_conn() as conn:
         rows = conn.execute(
             """

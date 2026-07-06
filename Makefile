@@ -76,8 +76,18 @@ test-cov:
 lint:
         $(PYTHON) -m ruff check src/ tests/
 
+lint-fix:
+        $(PYTHON) -m ruff check src/ tests/ --fix
+
 typecheck:
         $(PYTHON) -m mypy src/aibp/
+
+# Pre-commit hooks (run `pip install pre-commit && pre-commit install` once)
+pre-commit-install:
+        pre-commit install
+
+pre-commit-run:
+        pre-commit run --all-files
 
 # ─── Pipeline commands ──────────────────────────────────────────────
 

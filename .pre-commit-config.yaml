@@ -1,0 +1,21 @@
+# AIBP Autopilot — pre-commit hooks
+# Установка: pip install pre-commit && pre-commit install
+# После этого ruff будет запускаться автоматически перед каждым commit
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^src/|^tests/
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict

@@ -20,7 +20,6 @@ import pytest
 
 from aibp.self_learning.decision_engine import compute_decision, compute_engagement_rates
 
-
 # ═══════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════

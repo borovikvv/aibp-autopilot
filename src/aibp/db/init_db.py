@@ -1,8 +1,6 @@
 """Database initialization and migrations."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import psycopg2
 
 from aibp.utils.config import PROJECT_ROOT, get_settings
@@ -42,8 +40,8 @@ def check_connection() -> bool:
 
 def load_rss_feeds_to_db() -> int:
     """Load RSS feeds from YAML into rss_feeds table. Returns count."""
-    from aibp.utils.config import load_rss_feeds
     from aibp.db.connection import execute_returning, fetch_one
+    from aibp.utils.config import load_rss_feeds
 
     config = load_rss_feeds()
     count = 0
