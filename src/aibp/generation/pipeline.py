@@ -391,13 +391,12 @@ def append_cta(post: str, variant: str) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def resolve_post_image(policy: dict) -> str | None:
-    """Image URL to attach to a post, or None.
+    """Operator-set static image URL for a post, or None.
 
-    Currently sourced from visual_policy.static_image_url (an operator-set
-    scheme/banner), gated by visual_policy.enabled. Automatic per-post scheme
-    rendering (visual_policy.kind) is a separate task — there is no image
-    generator in the repo yet — but the publish path (issue #28) already
-    supports media the moment a URL exists, so visual_policy is no longer dead.
+    This is the static override (visual_policy.static_image_url, gated by
+    visual_policy.enabled). Per-post OpenRouter generation
+    (visual_policy.generate) is handled separately in run() via
+    aibp.generation.image_gen (issue #34).
     """
     vp = policy.get("visual_policy") or {}
     if not vp.get("enabled"):
@@ -622,7 +621,17 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         # redirects, then UPDATE in place.
         post = append_hashtag(post, summary_patch["strategy_rubric"])
         post = wrap_tracked_links(post, candidate["id"])
-        image_url = resolve_post_image(policy)  # issue #28: no longer hardcoded
+
+        # Post image: operator static override, else OpenRouter generation
+        # when enabled (issue #28/#34). Failure → text-only post.
+        image_url = resolve_post_image(policy)
+        image_status = None
+        vp = policy.get("visual_policy") or {}
+        if image_url is None and vp.get("enabled") and vp.get("generate"):
+            from aibp.generation.image_gen import generate_post_image
+            image_url = generate_post_image(candidate["id"], candidate, policy, client)
+            image_status = "generated" if image_url else "failed"
+
         execute(
             """
             UPDATE feed_items
@@ -638,6 +647,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 cta_variant = %s,
                 need_image = %s,
                 image_url = %s,
+                image_status = %s,
                 summary = COALESCE(summary, '{}'::jsonb) || %s::jsonb,
                 updated_at = now()
             WHERE id = %s
@@ -650,6 +660,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 cta_variant,
                 bool(image_url),
                 image_url,
+                image_status,
                 json.dumps(summary_patch, ensure_ascii=False),
                 candidate["id"],
             ),

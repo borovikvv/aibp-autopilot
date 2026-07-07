@@ -85,10 +85,12 @@ visual_policy:
   kind: "process_scheme"      # process_scheme | editorial_metaphor
   width: 1344
   height: 768
-  # Rich-message media (issue #28). Turn on and set a scheme/banner URL to
-  # attach media to every prod post. Per-post scheme rendering is TBD (no
-  # image generator yet), but the publish path already handles media.
+  # Rich-message media (issue #28/#34). enabled turns media on; then either
+  # set static_image_url (fixed scheme/banner) OR generate: true to render a
+  # per-post image via OpenRouter (google/gemini-2.5-flash-image). static wins
+  # if both are set. Generation failure → text-only post.
   enabled: false
+  generate: false
   static_image_url: ""
 
 # ─── Safety boundaries (DO NOT modify via autopilot) ───────────────

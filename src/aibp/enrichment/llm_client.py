@@ -18,6 +18,7 @@ from aibp.utils.config import PROJECT_ROOT, get_settings
 log = structlog.get_logger()
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images"
 
 # Cost per 1M tokens (USD). Update from https://openrouter.ai/models when needed.
 COST_TABLE: dict[str, dict[str, float]] = {
@@ -158,6 +159,44 @@ class OpenRouterClient:
         text = result["choices"][0]["message"]["content"]
         log.info("llm_call_ok", model=model, input_tokens=input_t, output_tokens=output_t, cost_usd=round(cost, 4))
         return text
+
+    def generate_image(self, prompt: str, model: str | None = None) -> bytes | None:
+        """Generate an image via OpenRouter /api/v1/images (issue #34).
+
+        Returns raw image bytes, or None on any failure (the caller falls back
+        to a text-only post). Cost is charged against the daily budget: the
+        response usage.cost if present, else a flat estimate from settings.
+        """
+        self._check_budget()
+        s = get_settings()
+        model = model or s.openrouter_image_model
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                resp = client.post(OPENROUTER_IMAGES_URL,
+                                   json={"model": model, "prompt": prompt}, headers=headers)
+                resp.raise_for_status()
+                result = resp.json()
+        except Exception as e:
+            log.error("image_gen_failed", model=model, error=str(e))
+            return None
+
+        cost = float(result.get("usage", {}).get("cost") or s.openrouter_image_cost_usd)
+        self._log_cost(model, 0, 0, cost)
+
+        data = result.get("data") or []
+        b64 = data[0].get("b64_json") if data else None
+        if not b64:
+            log.error("image_gen_no_data", model=model, keys=list(result.keys()))
+            return None
+        try:
+            import base64
+            image_bytes = base64.b64decode(b64)
+        except Exception as e:
+            log.error("image_gen_decode_failed", error=str(e))
+            return None
+        log.info("image_gen_ok", model=model, bytes=len(image_bytes), cost_usd=round(cost, 4))
+        return image_bytes
 
     def chat_json(
         self,

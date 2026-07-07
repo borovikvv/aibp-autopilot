@@ -31,8 +31,12 @@ class Settings:
     openrouter_miner_model: str
     openrouter_daily_budget_usd: float
 
-    # Image gen
+    # Image gen (issue #34) — via OpenRouter /api/v1/images
     xai_api_key: str
+    openrouter_image_model: str
+    openrouter_image_cost_usd: float
+    image_output_dir: Path
+    image_public_base_url: str
 
     # Hermes
     hermes_api_url: str
@@ -67,6 +71,11 @@ class Settings:
             openrouter_miner_model=os.getenv("OPENROUTER_MINER_MODEL", "anthropic/claude-sonnet-4"),
             openrouter_daily_budget_usd=float(os.getenv("OPENROUTER_DAILY_BUDGET_USD", "5.0")),
             xai_api_key=os.getenv("XAI_API_KEY", ""),
+            openrouter_image_model=os.getenv("OPENROUTER_IMAGE_MODEL", "google/gemini-2.5-flash-image"),
+            openrouter_image_cost_usd=float(os.getenv("OPENROUTER_IMAGE_COST_USD", "0.04")),
+            image_output_dir=Path(os.getenv("IMAGE_OUTPUT_DIR", "/srv/static/aibp/img")),
+            image_public_base_url=os.getenv("IMAGE_PUBLIC_BASE_URL",
+                                            "https://cockpit.borovikvv.ru/aibp/img"),
             hermes_api_url=os.getenv("HERMES_API_URL", "https://hermes-agent.nousresearch.com"),
             app_env=os.getenv("APP_ENV", "production"),
             app_timezone=os.getenv("APP_TIMEZONE", "Europe/Moscow"),
