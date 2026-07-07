@@ -95,6 +95,18 @@ visual_policy:
 
 # ─── Safety boundaries (DO NOT modify via autopilot) ───────────────
 safety:
+  # Composite reward (issue #37, ADR-0010): what the self-learning loop
+  # optimizes. reward = Σ(weight · component) / subscribers, at 48h horizon.
+  # Weights are heuristic value estimates (a forward ≈ 25 views, etc.) —
+  # tune manually as real click/CPS data accumulates.
+  reward_weights:
+    views: 1.0
+    forwards: 25.0     # organic reach + Telegram recommendation signal
+    clicks: 15.0       # tracked link clicks (monetization funnel)
+    subs_delta: 50.0   # attributed subscriber change (negative = churn)
+  # Δsubs attribution window after posted_at; clipped at the next post.
+  subs_attribution_hours: 24
+
   # Rate limits
   max_changes_per_day: 1
   max_changes_per_week: 3

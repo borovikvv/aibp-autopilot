@@ -23,11 +23,7 @@ from datetime import UTC, datetime
 
 import structlog
 
-from aibp.self_learning.db import (
-    ENGAGEMENT_HORIZON_HOURS,
-    get_snapshot_at_horizon,
-    sqlite_conn,
-)
+from aibp.self_learning.db import ENGAGEMENT_HORIZON_HOURS, sqlite_conn
 
 log = structlog.get_logger()
 
@@ -133,7 +129,14 @@ def sample_rubric_multipliers(rubrics: list[str], rng=None) -> dict[str, float]:
 # ═══════════════════════════════════════════════════════════════════
 
 def _load_scored_posts() -> list[dict]:
-    """Main-channel posts old enough to have a 48h horizon snapshot, oldest first."""
+    """Main-channel posts old enough to have a 48h horizon snapshot, oldest first.
+
+    rate = composite reward (issue #37, ADR-0010): views + forwards + clicks
+    + Δsubs, weighted and normalized by subscribers — the bandit optimizes
+    the same target as the decision engine.
+    """
+    from aibp.self_learning.reward import compute_rewards_for_posts
+
     with sqlite_conn() as conn:
         rows = conn.execute(
             f"""
@@ -146,13 +149,9 @@ def _load_scored_posts() -> list[dict]:
         ).fetchall()
         posts = [dict(r) for r in rows]
 
-    scored = []
-    for post in posts:
-        snapshot = get_snapshot_at_horizon(post["feed_item_id"])
-        if not snapshot or not snapshot.get("subscribers_at"):
-            continue
-        post["rate"] = (snapshot["views"] or 0) / snapshot["subscribers_at"]
-        scored.append(post)
+    scored = compute_rewards_for_posts(posts)
+    for post in scored:
+        post["rate"] = post["reward"]
     return scored
 
 

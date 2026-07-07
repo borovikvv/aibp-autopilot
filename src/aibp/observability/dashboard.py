@@ -223,6 +223,33 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
   <p>No click data yet (tracking disabled or no clicks recorded).</p>
   {% endif %}
 
+  <h2>Composite Reward — decomposition at 48h (last 14 days)</h2>
+  {% if reward_posts %}
+  <table>
+    <tr>
+      <th>Post</th><th>Slot</th><th>Views</th><th>Forwards</th><th>Clicks</th><th>Δsubs</th>
+      <th>Reward</th><th>views</th><th>forwards</th><th>clicks</th><th>subs_delta</th>
+    </tr>
+    {% for p in reward_posts[:15] %}
+    <tr>
+      <td>{{ p.feed_item_id }}</td>
+      <td>{{ p.slot }}</td>
+      <td>{{ p.views }}</td>
+      <td>{{ p.forwards }}</td>
+      <td>{{ p.clicks }}</td>
+      <td>{{ '%+.1f'|format(p.subs_delta) if p.subs_delta is not none else '—' }}</td>
+      <td><b>{{ '%.3f'|format(p.reward) }}</b></td>
+      <td>{{ '%.3f'|format(p.reward_components.views) }}</td>
+      <td>{{ '%.3f'|format(p.reward_components.forwards) }}</td>
+      <td>{{ '%.3f'|format(p.reward_components.clicks) }}</td>
+      <td>{{ '%.3f'|format(p.reward_components.subs_delta) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p>No scored posts yet (no 48h snapshots).</p>
+  {% endif %}
+
   <h2>Recent Autopilot Events</h2>
   {% if recent_events %}
   <table>
@@ -471,6 +498,27 @@ def _tgstat_healthy() -> bool | None:
     return row["event_type"] == "tgstat_ok"
 
 
+def get_reward_stats(days: int = 14) -> list[dict]:
+    """Composite reward decomposition per recent main-channel post (issue #37).
+
+    Shows what actually drives the optimization target: each component's
+    contribution to the reward, plus the raw counts behind it."""
+    from aibp.self_learning.reward import compute_rewards_for_posts
+
+    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    with sqlite_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT feed_item_id, posted_at, slot
+            FROM post_features
+            WHERE posted_at >= ? AND target_channel = 'main'
+            ORDER BY posted_at DESC
+            """,
+            (since,),
+        ).fetchall()
+    return compute_rewards_for_posts([dict(r) for r in rows])
+
+
 def get_recent_events(limit: int = 20) -> list[dict]:
     with sqlite_conn() as conn:
         rows = conn.execute(
@@ -498,6 +546,7 @@ def run() -> int:
         recent_decisions=get_recent_decisions(),
         recent_events=get_recent_events(),
         ctr=get_ctr_stats(),
+        reward_posts=get_reward_stats(),
         growth=get_growth_stats(),
         generated_at=datetime.now().isoformat(timespec="seconds"),
     )

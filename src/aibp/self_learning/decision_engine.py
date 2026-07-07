@@ -51,7 +51,7 @@ def get_engagement_for_policy_version(policy_version: str, since: str | None = N
     rather than MAX/last, so posts of different ages compare fairly (issue #14).
     """
     query = """
-        SELECT pf.feed_item_id, pf.slot, pf.target_channel
+        SELECT pf.feed_item_id, pf.posted_at, pf.slot, pf.target_channel
         FROM post_features pf
         WHERE pf.policy_version = ?
           AND pf.target_channel = 'main'
@@ -76,9 +76,10 @@ def get_engagement_for_policy_version(policy_version: str, since: str | None = N
 
 
 def compute_engagement_rates(posts: list[dict]) -> list[float]:
-    """Compute engagement rate (views / subscribers) for each post.
+    """Legacy engagement rate (views / subscribers) for each post.
 
-    Skips posts where subscribers is None or 0 (can't compute rate).
+    Kept for observability comparisons; decisions use compute_reward_rates
+    (issue #37, ADR-0010). Skips posts where subscribers is None or 0.
     """
     rates = []
     for p in posts:
@@ -88,6 +89,15 @@ def compute_engagement_rates(posts: list[dict]) -> list[float]:
         views = p.get("latest_views") or 0
         rates.append(views / subs)
     return rates
+
+
+def compute_reward_rates(posts: list[dict], policy: dict | None = None) -> list[float]:
+    """Composite reward per post (issue #37): views + forwards + clicks + Δsubs,
+    weighted and normalized by subscribers. Posts that can't be scored
+    (no snapshot / no subscriber count) are skipped."""
+    from aibp.self_learning.reward import compute_rewards_for_posts
+
+    return [p["reward"] for p in compute_rewards_for_posts(posts, policy=policy)]
 
 
 def compute_decision(
@@ -206,13 +216,14 @@ def make_decision(experiment: dict) -> dict:
     control_posts = get_engagement_for_policy_version(experiment["policy_before"], since=since)
     shadow_posts = get_engagement_for_policy_version(experiment["policy_after"], since=since)
 
-    control_rates = compute_engagement_rates(control_posts)
-    shadow_rates = compute_engagement_rates(shadow_posts)
+    policy = load_policy()
+    control_rates = compute_reward_rates(control_posts, policy=policy)
+    shadow_rates = compute_reward_rates(shadow_posts, policy=policy)
 
     exp_age_days = (datetime.now(UTC) -
                     datetime.fromisoformat(experiment["started_at"])).days
 
-    safety = load_policy().get("safety", {})
+    safety = policy.get("safety", {})
     window_days = safety.get("experiment_window_days", 14)
     return compute_decision(
         control_rates,
