@@ -5,7 +5,13 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from aibp.generation.quality_gate import CLICHE_RE, FORBIDDEN_RE, SOURCE_FRAMING_RE, validate_post
+from aibp.generation.quality_gate import (
+    CLICHE_RE,
+    FORBIDDEN_RE,
+    METRIC_PRESENCE_RE,
+    SOURCE_FRAMING_RE,
+    validate_post,
+)
 
 
 def test_valid_morning_post_passes():
@@ -56,6 +62,49 @@ def test_forbidden_re_still_catches_audience_labels():
         "продукт для собственников бизнеса",
     ):
         assert FORBIDDEN_RE.search(phrase) is not None, phrase
+
+
+def _morning_post(body_middle: str) -> str:
+    return (
+        "<b>Заголовок про процесс</b>\n\n"
+        f"{body_middle}\n\n"
+        "Второй абзац про выбор инструмента под задачу.\n\n"
+        "Третий абзац про ограничение подхода.\n\n"
+        "Четвёртый абзац про следующий шаг.\n\n"
+        '<a href="https://example.com/article">Источник</a>'
+    )
+
+
+def test_metric_presence_warns_without_number():
+    """Issue #32: a morning post with no measurable fact → warn (not fail)."""
+    post = _morning_post("Команда переосмыслила подход и стала работать иначе.")
+    result = validate_post(post, expected_url="https://example.com/article", slot="morning")
+    assert result["verdicts"]["metric_presence"]["status"] == "warn"
+    assert "metric_presence" not in result["hard_fail_keys"]  # never blocks
+
+
+def test_metric_presence_passes_with_number():
+    post = _morning_post("Проверку сократили с 40 до 12 минут на заявку.")
+    result = validate_post(post, expected_url="https://example.com/article", slot="morning")
+    assert result["verdicts"]["metric_presence"]["status"] == "pass"
+
+
+def test_metric_presence_regex_markers():
+    for phrase in ("выросло на 30%", "сэкономили 500 ₽", "заняло 3 дня",
+                   "стало вдвое быстрее", "ускорилось в несколько раз"):
+        assert METRIC_PRESENCE_RE.search(phrase) is not None, phrase
+    assert METRIC_PRESENCE_RE.search("просто стало лучше и удобнее") is None
+
+
+def test_metric_presence_only_for_morning():
+    """Evening/weekly slots must not get a metric_presence verdict."""
+    evening = (
+        "<b>Граница</b>\n\n"
+        "Короткая заметка про один предел без цифр.\n\n"
+        '<a href="https://example.com/article">Источник</a>'
+    )
+    result = validate_post(evening, expected_url="https://example.com/article", slot="evening")
+    assert "metric_presence" not in result["verdicts"]
 
 
 def test_source_framing_fails():

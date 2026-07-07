@@ -62,6 +62,16 @@ PROMOTIONAL_CTA_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Measurable marker — a morning post should carry at least one number/metric
+# (the implementation_metric rubric). Digit, currency, time/count unit, or a
+# spelled-out multiplier. Warn-only (issue #32), never a hard fail.
+METRIC_PRESENCE_RE = re.compile(
+    r"(\d|[₽$€]|\bруб\b|"
+    r"вдво[еёя]|втро[еёя]|вчетверо|вполовину|"
+    r"в\s+(?:нескольк|десятк|сотн|тысяч)\w*\s+раз)",
+    re.IGNORECASE,
+)
+
 # Source framing — post must NOT refer to source in body (only at end)
 SOURCE_FRAMING_RE = re.compile(
     r"(В\s+материал[еа](?:\s+[A-ZА-ЯЁA-Za-zА-Яа-яЁё0-9 ._—–-]{0,80})?|"
@@ -236,6 +246,14 @@ def validate_post(
         verdicts["morning_structure"] = _verdict(
             "warn" if structure_issues else "pass",
             note="; ".join([length_note] + structure_issues),
+        )
+        # Soft gate: morning posts should carry a measurable fact (issue #32).
+        # warn only — legitimate exceptions exist, but the signal feeds
+        # observability and the informed-retry hint (issue #30).
+        has_metric = bool(METRIC_PRESENCE_RE.search(body_plain))
+        verdicts["metric_presence"] = _verdict(
+            "pass" if has_metric else "warn",
+            note=None if has_metric else "no numeric/measurable marker in body",
         )
     elif slot == "weekly_digest":
         bullet_lines = re.findall(r"(?m)^\s*[•-]\s+(.+)$", post)
