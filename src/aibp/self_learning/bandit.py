@@ -197,6 +197,10 @@ def update_from_engagement() -> int:
 def run() -> int:
     """Cron entry point."""
     update_from_engagement()
+    # Offer outcomes (issue #38) ride the same cron: same cadence, same
+    # posteriors store. Degrades to 0 observations when PG is unreachable.
+    from aibp.monetization.offers import update_offer_outcomes
+    update_offer_outcomes()
     return 0
 
 

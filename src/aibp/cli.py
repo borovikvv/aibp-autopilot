@@ -175,5 +175,52 @@ def resume_autopilot() -> None:
         click.echo("ℹ️  Autopilot was not paused")
 
 
+# ─── Offers catalog (issue #38) ─────────────────────────────────────
+
+@cli.command("offer-add")
+@click.argument("slug")
+@click.option("--title", required=True, help="Link text shown in the post CTA.")
+@click.option("--url", "target_url", required=True, help="Partner/CPA target URL.")
+@click.option("--topics", default="", help="Comma-separated topic_cluster tags; empty = any topic.")
+@click.option("--rate", "revenue_per_click", type=float, default=0.0,
+              help="Estimated revenue per click, ₽.")
+@click.option("--notes", default=None)
+def offer_add(slug: str, title: str, target_url: str, topics: str,
+              revenue_per_click: float, notes: str | None) -> None:
+    """Add or update an offer (upsert by slug)."""
+    from aibp.monetization.offers import add_offer
+    topic_list = [t.strip() for t in topics.split(",") if t.strip()]
+    add_offer(slug, title, target_url, topic_list, revenue_per_click, notes)
+    click.echo(f"✅ offer '{slug}' saved")
+
+
+@cli.command("offer-list")
+@click.option("--status", default=None, type=click.Choice(["active", "paused"]))
+def offer_list(status: str | None) -> None:
+    """List offers in the catalog."""
+    from aibp.monetization.offers import list_offers
+    offers = list_offers(status=status)
+    if not offers:
+        click.echo("(no offers)")
+        return
+    for o in offers:
+        topics = ",".join(o["topics"] or []) or "any"
+        click.echo(f"{o['slug']:24} {o['status']:7} {float(o['revenue_per_click']):>7.2f}₽/click"
+                   f"  [{topics}]  {o['title']}")
+
+
+@cli.command("offer-set-status")
+@click.argument("slug")
+@click.argument("status", type=click.Choice(["active", "paused"]))
+def offer_set_status(slug: str, status: str) -> None:
+    """Pause or reactivate an offer."""
+    from aibp.monetization.offers import set_offer_status
+    if set_offer_status(slug, status):
+        click.echo(f"✅ offer '{slug}' → {status}")
+    else:
+        click.echo(f"❌ offer '{slug}' not found")
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     cli()

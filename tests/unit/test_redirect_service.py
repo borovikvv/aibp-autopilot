@@ -27,9 +27,10 @@ class FakeDB:
 
     def execute(self, sql: str, params: tuple = ()) -> int:
         if "INSERT INTO tracked_links" in sql:
-            short_id, feed_item_id, target_url = params
+            short_id, feed_item_id, target_url, offer_id = params
             self.links.setdefault(short_id, {
                 "feed_item_id": feed_item_id, "target_url": target_url,
+                "offer_id": offer_id,
             })
             return 1
         if "INSERT INTO link_clicks" in sql:

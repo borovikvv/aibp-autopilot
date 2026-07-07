@@ -374,16 +374,55 @@ def append_hashtag(post: str, rubric: str | None) -> str:
     return f"{post.rstrip()}\n\n{tag}"
 
 
+def _insert_before_source(post: str, cta_html: str) -> str:
+    """Insert a CTA paragraph before the final source link."""
+    lines = post.rstrip().rsplit("\n", 1)
+    if len(lines) == 2 and "Источник" in lines[1]:
+        return f"{lines[0]}\n{cta_html}\n\n{lines[1]}"
+    return f"{post.rstrip()}\n\n{cta_html}"
+
+
 def append_cta(post: str, variant: str) -> str:
     """Insert the CTA paragraph before the final source link."""
     text = CTA_TEMPLATES.get(variant)
     if not text:
         return post
-    cta_html = f"<i>{text}</i>"
-    lines = post.rstrip().rsplit("\n", 1)
-    if len(lines) == 2 and "Источник" in lines[1]:
-        return f"{lines[0]}\n{cta_html}\n\n{lines[1]}"
-    return f"{post.rstrip()}\n\n{cta_html}"
+    return _insert_before_source(post, f"<i>{text}</i>")
+
+
+AFFILIATE_VARIANT = "affiliate_link"
+
+
+def attach_affiliate_offer(post: str, candidate: dict) -> tuple[str, str] | None:
+    """Pick an offer for the post's topic and append a tracked offer CTA.
+
+    Returns (post_with_cta, offer_slug), or None when no offer can be
+    attached — empty/unreachable catalog, no eligible offer for the topic,
+    tracking not configured, or the offer title fails the promotional gate.
+    The caller then falls back to non-affiliate CTA variants (issue #38).
+    """
+    if not get_settings().tracking_base_url:
+        return None
+    try:
+        from aibp.monetization.offers import pick_offer
+        from aibp.tracking.redirect_service import register_link, short_url
+
+        summary = parse_summary(candidate.get("summary"))
+        topic = (summary.get("editorial") or {}).get("topic_cluster")
+        offer = pick_offer(topic)
+        if offer is None:
+            return None
+        if not validate_cta_text(offer["title"])["ok"]:
+            log.warning("offer_title_rejected_by_gate", offer=offer["slug"])
+            return None
+        url = short_url(register_link(candidate["id"], offer["target_url"],
+                                      offer_id=offer["id"]))
+        cta_html = (f'<i>По теме поста: <a href="{url}">{offer["title"]}</a> — '
+                    f'детали, тарифы и ограничения по ссылке.</i>')
+        return _insert_before_source(post, cta_html), offer["slug"]
+    except Exception as e:
+        log.warning("offer_attach_failed", candidate_id=candidate.get("id"), error=str(e))
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -527,8 +566,26 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     # native evening poll instead of appended text.
     cta_variant = None
     poll = None
+    offer_slug = None
     if pipeline_env == "prod":
         candidate_variant = select_cta_variant(policy, slot=slot)
+
+        # affiliate_link now means a real offer from the catalog (issue #38).
+        # No attachable offer → resample among the remaining variants.
+        if candidate_variant == AFFILIATE_VARIANT:
+            attached = attach_affiliate_offer(post, candidate)
+            if attached is not None:
+                post, offer_slug = attached
+                cta_variant = AFFILIATE_VARIANT
+                candidate_variant = None
+                log.info("offer_cta_appended", offer=offer_slug, candidate_id=candidate["id"])
+            else:
+                fallback = {k: v for k, v in (policy.get("cta_variants") or {}).items()
+                            if k != AFFILIATE_VARIANT}
+                candidate_variant = select_cta_variant({"cta_variants": fallback}, slot=slot)
+                log.info("offer_unavailable_cta_fallback",
+                         fallback_variant=candidate_variant, candidate_id=candidate["id"])
+
         if candidate_variant == POLL_VARIANT:
             poll = build_evening_poll()
             cta_variant = POLL_VARIANT
@@ -562,6 +619,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         "policy_version": policy.get("version", "unknown"),
         "pipeline_env": pipeline_env,
         "cta_variant": cta_variant,
+        "offer_slug": offer_slug,
         "poll": poll,
         "source_button_url": source_button_url,
         "generated_at": datetime.now(UTC).isoformat(),

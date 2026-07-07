@@ -30,16 +30,21 @@ def make_short_id(feed_item_id: int, target_url: str) -> str:
     return hashlib.sha256(f"{feed_item_id}:{target_url}".encode()).hexdigest()[:8]
 
 
-def register_link(feed_item_id: int, target_url: str) -> str:
-    """Create (or reuse) a tracked link. Returns the short_id."""
+def register_link(feed_item_id: int, target_url: str, offer_id: int | None = None) -> str:
+    """Create (or reuse) a tracked link. Returns the short_id.
+
+    offer_id ties the link's clicks to an offer (issue #38); the update on
+    conflict lets a re-generated post attach the offer to an existing link.
+    """
     short_id = make_short_id(feed_item_id, target_url)
     execute(
         """
-        INSERT INTO tracked_links (short_id, feed_item_id, target_url)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (short_id) DO NOTHING
+        INSERT INTO tracked_links (short_id, feed_item_id, target_url, offer_id)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (short_id) DO UPDATE
+        SET offer_id = COALESCE(EXCLUDED.offer_id, tracked_links.offer_id)
         """,
-        (short_id, feed_item_id, target_url),
+        (short_id, feed_item_id, target_url, offer_id),
     )
     return short_id
 

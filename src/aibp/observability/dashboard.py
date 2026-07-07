@@ -223,6 +223,46 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
   <p>No click data yet (tracking disabled or no clicks recorded).</p>
   {% endif %}
 
+  <h2>Offers — estimated revenue (last 30 days)</h2>
+  {% if offers.by_offer %}
+  <div class="metric">
+    <div class="metric-value">{{ '%.0f'|format(offers.total_revenue) }} ₽</div>
+    <div class="metric-label">Est. revenue (30d)</div>
+  </div>
+  <table>
+    <tr>
+      <th>Offer</th><th>Status</th><th>₽/click</th><th>Posts</th><th>Clicks</th><th>Est. revenue</th>
+    </tr>
+    {% for o in offers.by_offer %}
+    <tr>
+      <td>{{ o.slug }} — {{ o.title[:40] }}</td>
+      <td>{{ o.status }}</td>
+      <td>{{ '%.2f'|format(o.rpc) }}</td>
+      <td>{{ o.posts }}</td>
+      <td>{{ o.clicks }}</td>
+      <td><b>{{ '%.0f'|format(o.est_revenue or 0) }} ₽</b></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% if offers.by_post %}
+  <h3>Revenue by post</h3>
+  <table>
+    <tr><th>Post</th><th>Offer</th><th>Clicks</th><th>Est. revenue</th></tr>
+    {% for p in offers.by_post %}
+    <tr>
+      <td>{{ p.feed_item_id }}</td>
+      <td>{{ p.slug }}</td>
+      <td>{{ p.clicks }}</td>
+      <td>{{ '%.0f'|format(p.est_revenue or 0) }} ₽</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% else %}
+  <p>No offers in the catalog yet — add one:
+     <code>aibp offer-add &lt;slug&gt; --title ... --url ... --rate ...</code></p>
+  {% endif %}
+
   <h2>Composite Reward — decomposition at 48h (last 14 days)</h2>
   {% if reward_posts %}
   <table>
@@ -498,6 +538,49 @@ def _tgstat_healthy() -> bool | None:
     return row["event_type"] == "tgstat_ok"
 
 
+def get_offer_stats(days: int = 30) -> dict:
+    """Estimated revenue per offer and per post (issue #38): clicks on
+    offer-attributed tracked links × the offer's revenue_per_click.
+    Degrades to empty when PG is unreachable or offers are not deployed."""
+    try:
+        from aibp.db.connection import fetch_all as pg_fetch_all
+        by_offer = pg_fetch_all(
+            """
+            SELECT o.slug, o.title, o.status, o.revenue_per_click::float AS rpc,
+                   COUNT(lc.id) AS clicks,
+                   COUNT(DISTINCT tl.feed_item_id) AS posts,
+                   COUNT(lc.id) * o.revenue_per_click::float AS est_revenue
+            FROM offers o
+            LEFT JOIN tracked_links tl ON tl.offer_id = o.id
+            LEFT JOIN link_clicks lc ON lc.short_id = tl.short_id
+                 AND lc.clicked_at >= now() - make_interval(days => %s)
+            GROUP BY o.id
+            ORDER BY est_revenue DESC, clicks DESC
+            """,
+            (days,),
+        )
+        by_post = pg_fetch_all(
+            """
+            SELECT tl.feed_item_id, o.slug, o.revenue_per_click::float AS rpc,
+                   COUNT(lc.id) AS clicks,
+                   COUNT(lc.id) * o.revenue_per_click::float AS est_revenue
+            FROM tracked_links tl
+            JOIN offers o ON o.id = tl.offer_id
+            LEFT JOIN link_clicks lc ON lc.short_id = tl.short_id
+            WHERE tl.created_at >= now() - make_interval(days => %s)
+            GROUP BY tl.feed_item_id, o.slug, o.revenue_per_click
+            ORDER BY est_revenue DESC
+            """,
+            (days,),
+        )
+    except Exception as e:
+        log.warning("offer_stats_unavailable", error=str(e))
+        return {"by_offer": [], "by_post": [], "total_revenue": 0.0}
+
+    total = sum(r["est_revenue"] or 0 for r in by_offer)
+    return {"by_offer": by_offer, "by_post": by_post[:15], "total_revenue": total}
+
+
 def get_reward_stats(days: int = 14) -> list[dict]:
     """Composite reward decomposition per recent main-channel post (issue #37).
 
@@ -547,6 +630,7 @@ def run() -> int:
         recent_events=get_recent_events(),
         ctr=get_ctr_stats(),
         reward_posts=get_reward_stats(),
+        offers=get_offer_stats(),
         growth=get_growth_stats(),
         generated_at=datetime.now().isoformat(timespec="seconds"),
     )

@@ -10,3 +10,4 @@
 - [0008 — Bayesian (bootstrap) decision criterion](0008-bayesian-decision-criterion.md)
 - [0009 — Rich message publishing](0009-rich-message-publishing.md)
 - [0010 — Composite reward (growth + monetization)](0010-composite-reward.md)
+- [0011 — Offers catalog + expected-revenue selection](0011-offers-catalog.md)
