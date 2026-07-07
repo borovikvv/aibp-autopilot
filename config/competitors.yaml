@@ -19,6 +19,17 @@ subscriber_value_rub: 50
 assumed_conversion_pct: 1.0
 
 # 3-5 каналов-конкурентов для еженедельного отчёта (username без @).
-channels: []
-  # - username: example_ai_channel
-  #   note: "прямой конкурент, та же ниша"
+# Это же — пул доноров для `aibp ad-plan <username>` (issue #39).
+# ВАЖНО: перед первой закупкой сверить username и живость канала на tgstat.ru —
+# каналы переименовываются, аудитория меняется.
+channels:
+  - username: seeallochnaya
+    note: "Сиолошная — разборы LLM/индустрии, большая RU-аудитория; смежная ниша"
+  - username: ai_newz
+    note: "эйай ньюз — новости ИИ от research scientist; смежная ниша"
+  - username: denissexy
+    note: "Denis Sexy IT — ИИ/технологии для широкой аудитории"
+  - username: ai_machinelearning_big_data
+    note: "Machinelearning — крупный RU-канал про ML/ИИ"
+  - username: data_secrets
+    note: "Data Secrets — новости и мемы про ИИ, активная аудитория"

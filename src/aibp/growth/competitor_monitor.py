@@ -241,7 +241,8 @@ def get_our_er_percent() -> float | None:
 
 def build_report(deltas: list[dict], anomaly: dict | None,
                  recommendations: list[dict], our_er: float | None,
-                 tgstat_status: str | None = None) -> str:
+                 tgstat_status: str | None = None,
+                 cps_rows: list[dict] | None = None) -> str:
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     lines = [f"# Growth report — {today}", ""]
 
@@ -279,6 +280,12 @@ def build_report(deltas: list[dict], anomaly: dict | None,
             lines.append("")
     else:
         lines.append("Конкуренты не настроены (config/competitors.yaml) или TGSTAT_API_TOKEN не задан.")
+
+    # Actual CPS per traffic source (issue #39) — forecast vs fact.
+    if cps_rows is not None:
+        from aibp.growth.traffic_sources import cps_report_lines
+        lines.append("")
+        lines.extend(cps_report_lines(cps_rows))
 
     lines.append("")
     lines.append("_Закупка рекламы не автоматизирована: отчёт заканчивается рекомендацией, "
@@ -335,7 +342,9 @@ def run() -> int:
             if recommendations:
                 log_autopilot_event("tgstat_ok", details={"channels": len(recommendations)})
 
-    report = build_report(deltas, anomaly, recommendations, our_er, tgstat_status)
+    from aibp.growth.traffic_sources import cps_summary
+    report = build_report(deltas, anomaly, recommendations, our_er, tgstat_status,
+                          cps_rows=cps_summary())
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d")

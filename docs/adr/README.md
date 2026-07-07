@@ -11,3 +11,4 @@
 - [0009 — Rich message publishing](0009-rich-message-publishing.md)
 - [0010 — Composite reward (growth + monetization)](0010-composite-reward.md)
 - [0011 — Offers catalog + expected-revenue selection](0011-offers-catalog.md)
+- [0012 — Invite-link subscription attribution + ad buying](0012-invite-link-attribution.md)

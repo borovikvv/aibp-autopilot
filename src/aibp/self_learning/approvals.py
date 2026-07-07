@@ -170,7 +170,10 @@ def handle_callback(callback_data: str) -> str:
 
 
 async def _get_updates(bot_token: str, offset: int | None = None) -> list[dict]:
-    params: dict = {"allowed_updates": json.dumps(["callback_query"]), "timeout": 0}
+    # chat_member rides the same poll (issue #39): this poller is the single
+    # getUpdates owner, so invite-link join attribution lives here too.
+    params: dict = {"allowed_updates": json.dumps(["callback_query", "chat_member"]),
+                    "timeout": 0}
     if offset is not None:
         params["offset"] = offset
     async with httpx.AsyncClient(timeout=30) as client:
@@ -235,8 +238,18 @@ async def process_callbacks_async() -> int:
         processed = 0
         max_update_id = None
 
+        joins = 0
         for update in updates:
             max_update_id = update["update_id"]
+
+            # Invite-link join attribution (issue #39). Never raises; a lost
+            # join only costs one CPS data point, not the approvals run.
+            if update.get("chat_member"):
+                from aibp.growth.traffic_sources import handle_chat_member_update
+                if handle_chat_member_update(update):
+                    joins += 1
+                continue
+
             callback = update.get("callback_query")
             if not callback:
                 continue
@@ -257,6 +270,8 @@ async def process_callbacks_async() -> int:
 
     if processed:
         log.info("approval_callbacks_processed", count=processed)
+    if joins:
+        log.info("invite_joins_recorded", count=joins)
     return processed
 
 

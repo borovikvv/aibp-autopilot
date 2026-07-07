@@ -222,5 +222,62 @@ def offer_set_status(slug: str, status: str) -> None:
         raise SystemExit(1)
 
 
+# ─── Traffic sources + ad buying (issue #39) ───────────────────────
+
+@cli.command("ad-plan")
+@click.argument("donor")
+def ad_plan(donor: str) -> None:
+    """Prepare an ad buy: forecast + invite link + creative + application draft."""
+    from aibp.growth.ad_buying import plan_ad_buy
+    path = plan_ad_buy(donor)
+    click.echo(f"✅ План закупки готов: {path}")
+    click.echo("   Оплата и договорённости — вручную; подписки по ссылке считаются автоматически.")
+
+
+@cli.command("source-add")
+@click.argument("slug")
+@click.option("--kind", default="ad_buy",
+              type=click.Choice(["ad_buy", "cross_promo", "external", "other"]))
+@click.option("--channel", "channel_username", default=None, help="Donor channel username.")
+@click.option("--notes", default=None)
+def source_add(slug: str, kind: str, channel_username: str | None, notes: str | None) -> None:
+    """Create a traffic source with its own invite link."""
+    from aibp.growth.traffic_sources import create_source
+    source = create_source(slug, kind=kind, channel_username=channel_username, notes=notes)
+    click.echo(f"✅ source '{slug}' created")
+    click.echo(f"   invite link: {source['invite_link']}")
+
+
+@cli.command("source-set")
+@click.argument("slug")
+@click.option("--cost", "cost_rub", type=float, default=None, help="Paid price, ₽.")
+@click.option("--status", default=None, type=click.Choice(["draft", "live", "done"]))
+@click.option("--posted-at", "ad_posted_at", default=None, help="When the ad went live (ISO).")
+def source_set(slug: str, cost_rub: float | None, status: str | None,
+               ad_posted_at: str | None) -> None:
+    """Record the manual outcome of a placement (cost, status)."""
+    from aibp.growth.traffic_sources import set_source
+    if set_source(slug, cost_rub=cost_rub, status=status, ad_posted_at=ad_posted_at):
+        click.echo(f"✅ source '{slug}' updated")
+    else:
+        click.echo(f"❌ source '{slug}' not found (or nothing to update)")
+        raise SystemExit(1)
+
+
+@cli.command("source-list")
+def source_list() -> None:
+    """List traffic sources with joins and actual CPS."""
+    from aibp.growth.traffic_sources import cps_summary
+    rows = cps_summary()
+    if not rows:
+        click.echo("(no traffic sources)")
+        return
+    for r in rows:
+        cps = f"{r['actual_cps_rub']:.0f}₽/sub" if r["actual_cps_rub"] is not None else "—"
+        channel = f" @{r['channel_username']}" if r["channel_username"] else ""
+        click.echo(f"{r['slug']:32} {r['kind']:11} {r['status']:5} "
+                   f"joins={r['joins']:<4} cost={r['cost_rub'] or 0:>7.0f}₽ CPS={cps}{channel}")
+
+
 if __name__ == "__main__":
     cli()
