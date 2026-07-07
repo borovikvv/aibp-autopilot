@@ -35,6 +35,29 @@ def test_forbidden_terms_fail():
     assert "forbidden_terms" in result["hard_fail_keys"]
 
 
+def test_forbidden_re_allows_neutral_lexicon():
+    """Issue #29: neutral words sharing a root with jargon must NOT fail."""
+    for phrase in (
+        "руководитель проекта собрал команду",
+        "собственник процесса определяет stop-условие",
+        "инструмент для бизнес-процесса",
+        "шаблон для бизнес-задачи",
+    ):
+        assert FORBIDDEN_RE.search(phrase) is None, phrase
+
+
+def test_forbidden_re_still_catches_audience_labels():
+    """Issue #29: genuine audience jargon must still fail."""
+    for phrase in (
+        "статья для владельцев бизнеса",
+        "решение для малого и среднего бизнеса",
+        "гайд для SMB",
+        "полезно для бизнеса в целом",
+        "продукт для собственников бизнеса",
+    ):
+        assert FORBIDDEN_RE.search(phrase) is not None, phrase
+
+
 def test_source_framing_fails():
     post = (
         "<b>Заголовок</b>\n\n"

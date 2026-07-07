@@ -22,17 +22,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 # CORE PATTERNS (hardcoded, never modified by autopilot)
 # ═══════════════════════════════════════════════════════════════════
 
-# Forbidden audience labels — channel tone rejects business-school jargon
+# Forbidden AUDIENCE LABELS — channel tone rejects business-school jargon.
+# Issue #29: match audience labels, not neutral word roots. "руководитель
+# проекта", "собственник процесса" (process owner — the channel's own
+# vocabulary for pilot design), "для бизнес-процесса" must pass; only the
+# audience framing ("владельцы бизнеса", "для малого бизнеса", SMB) fails.
 FORBIDDEN_RE = re.compile(
     r"(\bSMB\b|\bSME\b|\bМСБ\b|"
     r"мал(ый|ого|ому|ым|ом|ые|ых|ыми)?\s+бизнес|"
     r"средн(ий|его|ему|им|ем|ие|их|ими)?\s+бизнес|"
     r"мал(ый|ого|ому|ым|ом|ые|ых|ыми)?\s+и\s+средн(ий|его|ему|им|ем|ие|их|ими)?\s+бизнес|"
     r"владельц\w*\s+бизнес\w*|владелец\s+бизнес\w*|"
-    r"собственник\w*|\bCEO\b|\bСЕО\b|руководител\w*|"
+    r"собственник\w*\s+бизнес\w*|\bCEO\b|\bСЕО\b|"
     r"для\s+предпринимател\w*|для\s+управленц\w*|для\s+таких\s+компан\w+|"
-    r"для\s+бизнес\w*|для\s+владельц\w+\s+бизнес\w*|"
-    r"вывод\s+для\s+бизнес\w*|вывод\s+для\s+владельц\w+\s+бизнес\w*|"
+    # "для бизнеса" (audience) fails, but "для бизнес-процесса/задачи" passes:
+    # require a noun case ending so the hyphenated compound is not matched.
+    r"для\s+бизнес(?:а|у|е|ом)\b|"
     r"управленческ\w+\s+вопрос|управленческ\w+\s+вывод|операторск\w+\s+вывод)",
     re.IGNORECASE,
 )
