@@ -105,6 +105,14 @@ Evening = boundary note. One limit, mistake, or distinction. Short and sharp.
 Weekly digest = synthesis of 4-5 sources around one weekly signal.
 {% endif %}
 
+{% if previous_failures %}
+## Предыдущая попытка отклонена редактурой
+
+Твой прошлый вариант не прошёл. Исправь ТОЛЬКО перечисленное, не ломая остального:
+{% for f in previous_failures %}- {{ f.key }}{% if f.hits %}: {{ f.hits }}{% endif %}
+{% endfor %}
+{% endif %}
+
 ## Output
 
 Return ONLY the post HTML. No explanation, no markdown fences.
@@ -208,8 +216,33 @@ def select_candidate(slot: str, policy: dict, pipeline_env: str = "prod") -> dic
 # Post generation
 # ═══════════════════════════════════════════════════════════════════
 
-def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterClient) -> str | None:
-    """Generate post draft via LLM."""
+def extract_gate_failures(validation: dict) -> list[dict]:
+    """Turn a validate_post result into retry hints (issue #30).
+
+    Includes every failed verdict plus warnings (e.g. metric_presence), each
+    as {"key": ..., "hits": "..."} so the next prompt can name what to fix.
+    """
+    failures = []
+    for key, verdict in validation.get("verdicts", {}).items():
+        if verdict.get("status") not in ("fail", "warn"):
+            continue
+        hits = verdict.get("hits") or []
+        detail = ", ".join(h.get("text", "") for h in hits if h.get("text"))
+        if not detail:
+            detail = verdict.get("note") or ""
+        failures.append({"key": key, "hits": detail})
+    return failures
+
+
+def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterClient,
+                  previous_failures: list[dict] | None = None, attempt: int = 0) -> str | None:
+    """Generate post draft via LLM.
+
+    previous_failures: gate feedback from the prior attempt, injected into the
+    prompt so the model fixes the specific problem instead of re-rolling blind
+    (issue #30). temperature rises slightly on later attempts to escape a stuck
+    formulation.
+    """
     summary = parse_summary(candidate.get("summary"))
     editorial = summary.get("editorial", {})
 
@@ -239,12 +272,16 @@ def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterCl
         target_chars_max=post_params.get("target_chars", [800, 1400])[1],
         paragraphs_min=post_params.get("paragraphs", [4, 5])[0],
         paragraphs_max=post_params.get("paragraphs", [4, 5])[1],
+        previous_failures=previous_failures or [],
     )
+
+    # Nudge temperature up on retries to escape a stuck formulation.
+    temperature = min(0.4 + 0.15 * attempt, 0.7)
 
     try:
         post = client.chat(
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
+            temperature=temperature,
             max_tokens=2000,
         )
         return post.strip()
@@ -357,10 +394,14 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         title=candidate["title"][:60] if candidate["title"] else "",
     )
 
-    # Generate with retry (max 3 attempts if quality gate fails)
+    # Generate with retry (max 3 attempts if quality gate fails). Each retry
+    # is "informed": the prior attempt's gate feedback goes into the prompt
+    # (issue #30) instead of re-rolling the same prompt blind.
     post = None
+    previous_failures: list[dict] | None = None
     for attempt in range(3):
-        post = generate_post(candidate, slot, policy, client)
+        post = generate_post(candidate, slot, policy, client,
+                             previous_failures=previous_failures, attempt=attempt)
         if post is None:
             return 1
 
@@ -375,11 +416,13 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
             log.info("quality_gate_passed", attempt=attempt + 1, slot=slot, pipeline_env=pipeline_env)
             break
         else:
+            previous_failures = extract_gate_failures(validation)
             log.warning(
                 "quality_gate_failed",
                 attempt=attempt + 1,
                 pipeline_env=pipeline_env,
                 hard_fails=validation["hard_fail_keys"],
+                informed_retry=attempt < 2,
             )
             if attempt == 2:
                 log.error("quality_gate_failed_3_attempts", candidate=candidate["id"])
