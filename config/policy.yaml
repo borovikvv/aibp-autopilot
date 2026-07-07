@@ -28,7 +28,7 @@ post_params:
   morning:
     target_chars: [800, 1400]
     paragraphs: [4, 5]
-    max_bold: 1
+    max_bold: 4          # headline + up to 3 bold lead-in labels (issue #31)
     max_emoji: 0
     scheduled_hour_msk: 10
   evening:

@@ -91,7 +91,7 @@ Editorial classification:
 6. No AI clichés: "важно отметить", "в современном мире", "ключевой вывод".
 7. No generic moral endings ("В итоге...", "Итог: ...").
 8. Technical terms (RAG, token budget) allowed only with business translation.
-9. Post must start with a bold headline: `<b>...</b>`, then 3-4 paragraphs.
+9. Post must start with a bold headline: `<b>...</b>`, then 3-4 paragraphs. Bold is capped at {{ max_bold }} uses total (headline + optional lead-in labels).
 10. Length: {{ target_chars_min }}-{{ target_chars_max }} chars, {{ paragraphs_min }}-{{ paragraphs_max }} paragraphs.
 11. End with: `<a href="{{ url }}">Источник</a>` (exact format, nofollow not needed).
 
@@ -99,6 +99,12 @@ Editorial classification:
 
 {% if slot == "morning" %}
 Morning = analytical pillar. Full implementation angle: process, metric, choice, risk.
+
+For visual structure you MAY use up to 3 bold lead-in labels inside the body,
+each starting its sentence — e.g. "<b>Процесс.</b> …", "<b>Метрика.</b> …",
+"<b>Граница.</b> …". No bullet symbols, no emoji, no lists — just the bold
+label opening a normal sentence. This is optional; skip it if it doesn't fit.
+Do NOT add a hashtag yourself — one is appended automatically.
 {% elif slot == "evening" %}
 Evening = boundary note. One limit, mistake, or distinction. Short and sharp.
 {% elif slot == "weekly_digest" %}
@@ -272,6 +278,7 @@ def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterCl
         target_chars_max=post_params.get("target_chars", [800, 1400])[1],
         paragraphs_min=post_params.get("paragraphs", [4, 5])[0],
         paragraphs_max=post_params.get("paragraphs", [4, 5])[1],
+        max_bold=post_params.get("max_bold", 1),
         previous_failures=previous_failures or [],
     )
 
@@ -337,6 +344,34 @@ def select_cta_variant(policy: dict, slot: str | None = None) -> str | None:
 def build_evening_poll() -> dict:
     """A native poll for the evening slot (issue #33)."""
     return {"question": EVENING_POLL["question"], "options": list(EVENING_POLL["options"])}
+
+
+# Deterministic rubric → hashtag map (issue #31). The rubric is assigned at
+# enrichment, so this needs no LLM — just a lookup for channel navigation.
+RUBRIC_HASHTAGS = {
+    "process_under_ai": "#процесс",
+    "pilot_without_chaos": "#пилот",
+    "implementation_metric": "#метрика",
+    "ai_regulation": "#контур",
+    "tool_through_scenario": "#инструмент",
+    "anti_hype": "#безхайпа",
+}
+
+
+def rubric_hashtag(rubric: str | None) -> str | None:
+    """Hashtag for a strategy rubric, or None for an unknown/empty rubric."""
+    return RUBRIC_HASHTAGS.get(rubric or "")
+
+
+def append_hashtag(post: str, rubric: str | None) -> str:
+    """Insert the rubric hashtag on its own line before the final source link."""
+    tag = rubric_hashtag(rubric)
+    if not tag:
+        return post
+    lines = post.rstrip().rsplit("\n", 1)
+    if len(lines) == 2 and "Источник" in lines[1]:
+        return f"{lines[0]}\n\n{tag}\n{lines[1]}"
+    return f"{post.rstrip()}\n\n{tag}"
 
 
 def append_cta(post: str, variant: str) -> str:
@@ -583,7 +618,9 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
             scheduled=scheduled.isoformat(),
         )
     else:
-        # Prod: wrap source links into tracked redirects, then UPDATE in place
+        # Prod: rubric hashtag (issue #31), then wrap source links into tracked
+        # redirects, then UPDATE in place.
+        post = append_hashtag(post, summary_patch["strategy_rubric"])
         post = wrap_tracked_links(post, candidate["id"])
         image_url = resolve_post_image(policy)  # issue #28: no longer hardcoded
         execute(
