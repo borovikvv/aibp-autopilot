@@ -52,6 +52,13 @@ cta_variants:
   save_forward: 1.0      # save/forward prompt (retention)
   affiliate_link: 1.0    # push to the tracked source/offer link (revenue)
   comment_prompt: 1.0    # discussion prompt (engagement signal)
+  poll: 1.0              # native poll — evening slot only (issue #33)
+
+# ─── Telegram native elements (issue #33) ──────────────────────────
+telegram:
+  # Attach a tracked "Открыть источник →" inline button to prod posts
+  # (in addition to the in-text source link). Needs TRACKING_BASE_URL.
+  source_button: false
 
 # ─── 3. Regex Gates (auto-populated by self-learning) ─────────────
 # Each entry: {name, pattern, slot, action}

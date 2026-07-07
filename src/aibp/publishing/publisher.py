@@ -11,6 +11,7 @@ import structlog
 
 from aibp.db.connection import execute, fetch_all
 from aibp.utils.config import get_settings
+from aibp.utils.summary import parse_summary
 
 log = structlog.get_logger()
 
@@ -64,6 +65,7 @@ async def send_photo(
     photo_url: str,
     caption: str,
     parse_mode: str = "HTML",
+    reply_markup: dict | None = None,
 ) -> dict:
     """Send photo with caption via Bot API."""
     url = f"{TELEGRAM_API}/bot{bot_token}/sendPhoto"
@@ -73,9 +75,39 @@ async def send_photo(
         "caption": caption,
         "parse_mode": parse_mode,
     }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(url, json=payload)
         return resp.json()
+
+
+async def send_poll(
+    bot_token: str,
+    chat_id: str,
+    question: str,
+    options: list[str],
+    is_anonymous: bool = True,
+) -> dict:
+    """Send a native poll (issue #33). A poll is its own message.
+
+    Bot API limits: question 1-300 chars, 2-12 options, option text 1-100.
+    """
+    url = f"{TELEGRAM_API}/bot{bot_token}/sendPoll"
+    payload = {
+        "chat_id": chat_id,
+        "question": question[:300],
+        "options": [{"text": o[:100]} for o in options[:12]],
+        "is_anonymous": is_anonymous,
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, json=payload)
+        return resp.json()
+
+
+def source_button_markup(tracked_url: str) -> dict:
+    """Inline keyboard with a tracked 'open source' button (issue #33)."""
+    return {"inline_keyboard": [[{"text": "Открыть источник →", "url": tracked_url}]]}
 
 
 def get_channel_id(target_channel: str) -> str:
@@ -86,7 +118,8 @@ def get_channel_id(target_channel: str) -> str:
     return s.telegram_channel_id_prod
 
 
-async def _publish_post_message(bot_token: str, chat_id: str, item: dict, post_text: str) -> dict:
+async def _publish_post_message(bot_token: str, chat_id: str, item: dict, post_text: str,
+                                reply_markup: dict | None = None) -> dict:
     """Send the post as a rich message, choosing the path by length (issue #28).
 
     - media + text ≤ 1024 → sendPhoto with the full text as caption (one msg);
@@ -94,6 +127,9 @@ async def _publish_post_message(bot_token: str, chat_id: str, item: dict, post_t
       (one msg, up to 4096 chars);
     - no media, or a media send that fails → plain text message (fallback:
       a post without a picture beats a failed publish).
+
+    reply_markup (issue #33): optional inline keyboard, e.g. a tracked source
+    button. It is dropped only on the fallback text send if it caused a failure.
     """
     has_media = bool(item.get("need_image") and item.get("image_url"))
 
@@ -102,10 +138,12 @@ async def _publish_post_message(bot_token: str, chat_id: str, item: dict, post_t
             result = await send_photo(
                 bot_token=bot_token, chat_id=chat_id,
                 photo_url=item["image_url"], caption=post_text,
+                reply_markup=reply_markup,
             )
         else:
             result = await send_message(
                 bot_token=bot_token, chat_id=chat_id, text=post_text,
+                reply_markup=reply_markup,
                 link_preview_options={
                     "url": item["image_url"],
                     "prefer_large_media": True,
@@ -117,7 +155,19 @@ async def _publish_post_message(bot_token: str, chat_id: str, item: dict, post_t
         log.warning("media_publish_failed_fallback_text",
                     item_id=item.get("id"), error=result.get("description"))
 
-    return await send_message(bot_token=bot_token, chat_id=chat_id, text=post_text)
+    return await send_message(bot_token=bot_token, chat_id=chat_id, text=post_text,
+                              reply_markup=reply_markup)
+
+
+def _post_extras(item: dict) -> tuple[dict | None, dict | None]:
+    """Native elements from summary (issue #33): (source-button markup, poll)."""
+    summary = parse_summary(item.get("summary"))
+    reply_markup = None
+    button_url = summary.get("source_button_url")
+    if button_url:
+        reply_markup = source_button_markup(button_url)
+    poll = summary.get("poll") if isinstance(summary.get("poll"), dict) else None
+    return reply_markup, poll
 
 
 async def publish_one(item: dict) -> bool:
@@ -132,8 +182,11 @@ async def publish_one(item: dict) -> bool:
 
     log.info("publishing", item_id=item["id"], channel=item["target_channel"], chat_id=chat_id)
 
+    reply_markup, poll = _post_extras(item)
+
     try:
-        result = await _publish_post_message(s.telegram_bot_token, chat_id, item, post_text)
+        result = await _publish_post_message(s.telegram_bot_token, chat_id, item, post_text,
+                                             reply_markup=reply_markup)
     except Exception as e:
         log.error("telegram_api_error", item_id=item["id"], error=str(e))
         execute(
@@ -166,6 +219,20 @@ async def publish_one(item: dict) -> bool:
     message_id = str(result.get("result", {}).get("message_id", ""))
     log.info("published", item_id=item["id"], message_id=message_id)
 
+    # Native poll as a follow-up message (issue #33). Best-effort: a poll
+    # failure must not undo an already-published post.
+    if poll and poll.get("question") and poll.get("options"):
+        try:
+            poll_result = await send_poll(
+                bot_token=s.telegram_bot_token, chat_id=chat_id,
+                question=poll["question"], options=poll["options"],
+            )
+            if not poll_result.get("ok"):
+                log.warning("poll_send_failed", item_id=item["id"],
+                            error=poll_result.get("description"))
+        except Exception as e:
+            log.warning("poll_send_error", item_id=item["id"], error=str(e))
+
     # Mark as published
     execute(
         """
@@ -189,7 +256,7 @@ async def run_async() -> int:
     due_posts = fetch_all(
         """
         SELECT id, title, post_draft, scheduled_at, need_image, image_url,
-               telegram_file_id, pipeline_env, target_channel, used_as
+               telegram_file_id, pipeline_env, target_channel, used_as, summary
         FROM v_publisher_queue
         ORDER BY scheduler_priority ASC, scheduled_at ASC
         LIMIT 10

@@ -305,17 +305,38 @@ CTA_TEMPLATES = {
 }
 
 
-def select_cta_variant(policy: dict) -> str | None:
-    """Sample one CTA variant according to policy weights. None disables CTA."""
+# A native poll is an alternative CTA, eligible only in the evening slot
+# (issue #33) — a boundary note invites "would this work for you?".
+POLL_VARIANT = "poll"
+
+EVENING_POLL = {
+    "question": "Сработало бы это у вас?",
+    "options": ["Да, попробуем", "Уже используем", "Нет, не наш случай"],
+}
+
+
+def select_cta_variant(policy: dict, slot: str | None = None) -> str | None:
+    """Sample one CTA variant according to policy weights. None disables CTA.
+
+    The 'poll' variant (issue #33) is eligible only for the evening slot.
+    """
     weights = policy.get("cta_variants") or {}
+    eligible = set(CTA_TEMPLATES)
+    if slot == "evening":
+        eligible.add(POLL_VARIANT)
     valid = {
         k: float(v) for k, v in weights.items()
-        if k in CTA_TEMPLATES and isinstance(v, (int, float)) and v > 0
+        if k in eligible and isinstance(v, (int, float)) and v > 0
     }
     if not valid:
         return None
     import random
     return random.choices(list(valid.keys()), weights=list(valid.values()))[0]
+
+
+def build_evening_poll() -> dict:
+    """A native poll for the evening slot (issue #33)."""
+    return {"question": EVENING_POLL["question"], "options": list(EVENING_POLL["options"])}
 
 
 def append_cta(post: str, variant: str) -> str:
@@ -466,13 +487,19 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     if scheduled <= now_msk:
         scheduled += timedelta(hours=1)
 
-    # CTA variant — prod only (that's where conversion is measured). The CTA is
-    # appended after validate_post, so its text must pass the promotional-phrase
-    # gate explicitly or it would bypass editorial tone checks (issue #26).
+    # CTA variant — prod only (that's where conversion is measured). Text CTAs
+    # are appended after validate_post, so their text must pass the
+    # promotional-phrase gate (issue #26). The 'poll' variant (issue #33) is a
+    # native evening poll instead of appended text.
     cta_variant = None
+    poll = None
     if pipeline_env == "prod":
-        candidate_variant = select_cta_variant(policy)
-        if candidate_variant:
+        candidate_variant = select_cta_variant(policy, slot=slot)
+        if candidate_variant == POLL_VARIANT:
+            poll = build_evening_poll()
+            cta_variant = POLL_VARIANT
+            log.info("evening_poll_attached", candidate_id=candidate["id"])
+        elif candidate_variant:
             cta_check = validate_cta_text(CTA_TEMPLATES[candidate_variant])
             if cta_check["ok"]:
                 post = append_cta(post, candidate_variant)
@@ -481,6 +508,16 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
             else:
                 log.warning("cta_rejected_by_gate", variant=candidate_variant,
                             hits=cta_check.get("hits"))
+
+    # Tracked inline source button (issue #33): opt-in via policy.telegram.
+    source_button_url = None
+    if pipeline_env == "prod" and (policy.get("telegram") or {}).get("source_button"):
+        if get_settings().tracking_base_url and candidate.get("url"):
+            try:
+                from aibp.tracking.redirect_service import register_link, short_url
+                source_button_url = short_url(register_link(candidate["id"], candidate["url"]))
+            except Exception as e:
+                log.warning("source_button_link_failed", candidate_id=candidate["id"], error=str(e))
 
     summary = parse_summary(candidate.get("summary"))
     summary_patch = {
@@ -491,6 +528,8 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         "policy_version": policy.get("version", "unknown"),
         "pipeline_env": pipeline_env,
         "cta_variant": cta_variant,
+        "poll": poll,
+        "source_button_url": source_button_url,
         "generated_at": datetime.now(UTC).isoformat(),
     }
 

@@ -144,7 +144,8 @@ CREATE TRIGGER trg_feed_items_updated
 -- ─── View: due posts for publisher ────────────────────────────────
 CREATE OR REPLACE VIEW v_publisher_queue AS
 SELECT id, title, post_draft, scheduled_at, need_image, image_url,
-       telegram_file_id, pipeline_env, target_channel, used_as
+       telegram_file_id, pipeline_env, target_channel, used_as,
+       scheduler_priority, summary
 FROM feed_items
 WHERE review_status = 'approved'
   AND scheduled_at <= now()
