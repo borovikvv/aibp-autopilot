@@ -16,6 +16,14 @@ log = structlog.get_logger()
 
 TELEGRAM_API = "https://api.telegram.org"
 
+# Bot API limits (verified 2026-07, core.telegram.org/bots/api):
+#   sendMessage.text   : 1–4096 chars
+#   sendPhoto.caption  : 0–1024 chars
+# There is no method for "media + >1024 chars in one message"; for long posts
+# we attach the image as a large link-preview on the text message instead
+# (LinkPreviewOptions, Bot API 7.0). See ADR-0009.
+CAPTION_LIMIT = 1024
+
 
 async def send_message(
     bot_token: str,
@@ -24,18 +32,25 @@ async def send_message(
     parse_mode: str = "HTML",
     disable_preview: bool = True,
     reply_markup: dict | None = None,
+    link_preview_options: dict | None = None,
 ) -> dict:
     """Send Telegram message via Bot API.
 
     reply_markup: optional inline keyboard (used by the approval gate).
+    link_preview_options: LinkPreviewOptions dict (Bot API 7.0). When given it
+    supersedes disable_web_page_preview — used to attach a large media preview
+    to a long post (issue #28).
     """
     url = f"{TELEGRAM_API}/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
         "parse_mode": parse_mode,
-        "disable_web_page_preview": disable_preview,
     }
+    if link_preview_options is not None:
+        payload["link_preview_options"] = link_preview_options
+    else:
+        payload["disable_web_page_preview"] = disable_preview
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
     async with httpx.AsyncClient(timeout=30) as client:
@@ -71,6 +86,40 @@ def get_channel_id(target_channel: str) -> str:
     return s.telegram_channel_id_prod
 
 
+async def _publish_post_message(bot_token: str, chat_id: str, item: dict, post_text: str) -> dict:
+    """Send the post as a rich message, choosing the path by length (issue #28).
+
+    - media + text ≤ 1024 → sendPhoto with the full text as caption (one msg);
+    - media + longer text → sendMessage with the image as a large link preview
+      (one msg, up to 4096 chars);
+    - no media, or a media send that fails → plain text message (fallback:
+      a post without a picture beats a failed publish).
+    """
+    has_media = bool(item.get("need_image") and item.get("image_url"))
+
+    if has_media:
+        if len(post_text) <= CAPTION_LIMIT:
+            result = await send_photo(
+                bot_token=bot_token, chat_id=chat_id,
+                photo_url=item["image_url"], caption=post_text,
+            )
+        else:
+            result = await send_message(
+                bot_token=bot_token, chat_id=chat_id, text=post_text,
+                link_preview_options={
+                    "url": item["image_url"],
+                    "prefer_large_media": True,
+                    "show_above_text": True,
+                },
+            )
+        if result.get("ok"):
+            return result
+        log.warning("media_publish_failed_fallback_text",
+                    item_id=item.get("id"), error=result.get("description"))
+
+    return await send_message(bot_token=bot_token, chat_id=chat_id, text=post_text)
+
+
 async def publish_one(item: dict) -> bool:
     """Publish one feed_item. Returns True on success."""
     s = get_settings()
@@ -84,19 +133,7 @@ async def publish_one(item: dict) -> bool:
     log.info("publishing", item_id=item["id"], channel=item["target_channel"], chat_id=chat_id)
 
     try:
-        if item.get("need_image") and item.get("image_url"):
-            result = await send_photo(
-                bot_token=s.telegram_bot_token,
-                chat_id=chat_id,
-                photo_url=item["image_url"],
-                caption=post_text,
-            )
-        else:
-            result = await send_message(
-                bot_token=s.telegram_bot_token,
-                chat_id=chat_id,
-                text=post_text,
-            )
+        result = await _publish_post_message(s.telegram_bot_token, chat_id, item, post_text)
     except Exception as e:
         log.error("telegram_api_error", item_id=item["id"], error=str(e))
         execute(

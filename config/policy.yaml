@@ -78,6 +78,11 @@ visual_policy:
   kind: "process_scheme"      # process_scheme | editorial_metaphor
   width: 1344
   height: 768
+  # Rich-message media (issue #28). Turn on and set a scheme/banner URL to
+  # attach media to every prod post. Per-post scheme rendering is TBD (no
+  # image generator yet), but the publish path already handles media.
+  enabled: false
+  static_image_url: ""
 
 # ─── Safety boundaries (DO NOT modify via autopilot) ───────────────
 safety:

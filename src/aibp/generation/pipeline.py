@@ -331,6 +331,26 @@ def append_cta(post: str, variant: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Post media (issue #28)
+# ═══════════════════════════════════════════════════════════════════
+
+def resolve_post_image(policy: dict) -> str | None:
+    """Image URL to attach to a post, or None.
+
+    Currently sourced from visual_policy.static_image_url (an operator-set
+    scheme/banner), gated by visual_policy.enabled. Automatic per-post scheme
+    rendering (visual_policy.kind) is a separate task — there is no image
+    generator in the repo yet — but the publish path (issue #28) already
+    supports media the moment a URL exists, so visual_policy is no longer dead.
+    """
+    vp = policy.get("visual_policy") or {}
+    if not vp.get("enabled"):
+        return None
+    url = (vp.get("static_image_url") or "").strip()
+    return url if url.startswith(("http://", "https://")) else None
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Click tracking (issue #15)
 # ═══════════════════════════════════════════════════════════════════
 
@@ -526,6 +546,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     else:
         # Prod: wrap source links into tracked redirects, then UPDATE in place
         post = wrap_tracked_links(post, candidate["id"])
+        image_url = resolve_post_image(policy)  # issue #28: no longer hardcoded
         execute(
             """
             UPDATE feed_items
@@ -539,7 +560,8 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 used_as = %s,
                 campaign_tag = %s,
                 cta_variant = %s,
-                need_image = false,
+                need_image = %s,
+                image_url = %s,
                 summary = COALESCE(summary, '{}'::jsonb) || %s::jsonb,
                 updated_at = now()
             WHERE id = %s
@@ -550,6 +572,8 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 f"{slot}_post",
                 slot,
                 cta_variant,
+                bool(image_url),
+                image_url,
                 json.dumps(summary_patch, ensure_ascii=False),
                 candidate["id"],
             ),
