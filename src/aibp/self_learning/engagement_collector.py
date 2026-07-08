@@ -1,4 +1,4 @@
-"""Engagement Collector — fetches views/forwards from TG Bot API, stores in SQLite.
+"""Engagement Collector — fetches views/forwards from TG Bot API, stores in PostgreSQL.
 
 Cron: every 4h via Hermes.
 
@@ -22,9 +22,9 @@ from datetime import UTC, datetime
 
 import httpx
 import structlog
+from psycopg2.extras import Json
 
-from aibp.db.connection import fetch_all
-from aibp.self_learning.db import sqlite_conn
+from aibp.db.connection import execute, fetch_all
 from aibp.self_learning.telegram_lock import getupdates_lock
 from aibp.utils.config import get_settings
 from aibp.utils.summary import parse_summary
@@ -393,7 +393,7 @@ def extract_features_for_post(item: dict) -> dict:
         "scheduled_hour": scheduled_hour,
         "cta_variant": summary.get("cta_variant"),
         "policy_version": summary.get("policy_version", "unknown"),
-        "policy_blob": json.dumps(summary, ensure_ascii=False),
+        "policy_blob": summary,
     }
 
 
@@ -453,8 +453,9 @@ async def run_async() -> int:
         return 0
 
     # Store features for posts that don't have them yet
-    with sqlite_conn() as conn:
-        existing = {row["feed_item_id"] for row in conn.execute("SELECT feed_item_id FROM post_features")}
+    existing = {row["feed_item_id"] for row in fetch_all(
+        "SELECT feed_item_id FROM post_features"
+    )}
 
     new_features = 0
     for item in recent_posts:
@@ -462,19 +463,45 @@ async def run_async() -> int:
             continue
         try:
             features = extract_features_for_post(item)
-            with sqlite_conn() as conn:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO post_features
-                        (feed_item_id, posted_at, slot, pipeline_env, target_channel,
-                         strategy_rubric, topic_cluster, source_domain, source_url,
-                         char_count, paragraph_count, bold_count, emoji_count,
-                         has_image, visual_kind, scheduled_hour, cta_variant,
-                         policy_version, policy_blob)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    tuple(features.values()),
-                )
+            execute(
+                """
+                INSERT INTO post_features
+                    (feed_item_id, posted_at, slot, pipeline_env, target_channel,
+                     strategy_rubric, topic_cluster, source_domain, source_url,
+                     char_count, paragraph_count, bold_count, emoji_count,
+                     has_image, visual_kind, scheduled_hour, cta_variant,
+                     policy_version, policy_blob)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (feed_item_id) DO UPDATE SET
+                    posted_at = EXCLUDED.posted_at,
+                    slot = EXCLUDED.slot,
+                    policy_version = EXCLUDED.policy_version,
+                    policy_blob = EXCLUDED.policy_blob
+                """,
+                (
+                    features["feed_item_id"],
+                    features["posted_at"],
+                    features["slot"],
+                    features["pipeline_env"],
+                    features["target_channel"],
+                    features["strategy_rubric"],
+                    features["topic_cluster"],
+                    features["source_domain"],
+                    features["source_url"],
+                    features["char_count"],
+                    features["paragraph_count"],
+                    features["bold_count"],
+                    features["emoji_count"],
+                    features["has_image"],
+                    features["visual_kind"],
+                    features["scheduled_hour"],
+                    features["cta_variant"],
+                    features["policy_version"],
+                    Json(features["policy_blob"])
+                    if isinstance(features["policy_blob"], (dict, list))
+                    else features["policy_blob"],
+                ),
+            )
             new_features += 1
         except Exception as e:
             log.error("feature_extraction_failed", item_id=item["id"], error=str(e))
@@ -501,25 +528,24 @@ async def run_async() -> int:
         )
 
         if metrics:
-            with sqlite_conn() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO engagement_metrics
-                        (feed_item_id, measured_at, views, forwards, replies,
-                         reactions_count, reactions_breakdown, subscribers_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        item["id"],
-                        datetime.now(UTC).isoformat(),
-                        metrics["views"],
-                        metrics["forwards"],
-                        metrics["replies"],
-                        metrics["reactions_count"],
-                        metrics["reactions_breakdown"],
-                        metrics["subscribers_at"],
-                    ),
-                )
+            execute(
+                """
+                INSERT INTO engagement_metrics
+                    (feed_item_id, measured_at, views, forwards, replies,
+                     reactions_count, reactions_breakdown, subscribers_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                """,
+                (
+                    item["id"],
+                    datetime.now(UTC),
+                    metrics["views"],
+                    metrics["forwards"],
+                    metrics["replies"],
+                    metrics["reactions_count"],
+                    metrics["reactions_breakdown"],  # already a JSON string — cast to jsonb
+                    metrics["subscribers_at"],
+                ),
+            )
             metrics_collected += 1
         else:
             metrics_failed += 1
