@@ -23,7 +23,8 @@ from datetime import UTC, datetime
 
 import structlog
 
-from aibp.self_learning.db import ENGAGEMENT_HORIZON_HOURS, sqlite_conn
+from aibp.db.connection import execute, fetch_all
+from aibp.self_learning.db import ENGAGEMENT_HORIZON_HOURS
 
 log = structlog.get_logger()
 
@@ -41,57 +42,57 @@ MIN_BASELINE_POSTS = 5
 
 def ensure_arms(dimension: str, arm_ids: list[str]) -> None:
     """Create missing arms with a uniform Beta(1, 1) prior."""
-    now = datetime.now(UTC).isoformat()
-    with sqlite_conn() as conn:
-        for arm_id in arm_ids:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO bandit_arms (dimension, arm_id, alpha, beta, updated_at)
-                VALUES (?, ?, 1, 1, ?)
-                """,
-                (dimension, arm_id, now),
-            )
+    now = datetime.now(UTC)
+    for arm_id in arm_ids:
+        execute(
+            """
+            INSERT INTO bandit_arms (dimension, arm_id, alpha, beta, updated_at)
+            VALUES (%s, %s, 1, 1, %s)
+            ON CONFLICT (dimension, arm_id) DO NOTHING
+            """,
+            (dimension, arm_id, now),
+        )
 
 
 def get_arms(dimension: str) -> dict[str, tuple[float, float]]:
     """Return {arm_id: (alpha, beta)} for a dimension."""
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            "SELECT arm_id, alpha, beta FROM bandit_arms WHERE dimension = ?",
-            (dimension,),
-        ).fetchall()
-        return {r["arm_id"]: (r["alpha"], r["beta"]) for r in rows}
+    rows = fetch_all(
+        "SELECT arm_id, alpha, beta FROM bandit_arms WHERE dimension = %s",
+        (dimension,),
+    )
+    return {r["arm_id"]: (r["alpha"], r["beta"]) for r in rows}
 
 
 def record_outcome(dimension: str, arm_id: str, success: bool,
                    feed_item_id: int | None = None) -> None:
     """Update the arm posterior; optionally log the observation for idempotency."""
-    now = datetime.now(UTC).isoformat()
-    with sqlite_conn() as conn:
-        conn.execute(
+    now = datetime.now(UTC)
+    execute(
+        """
+        INSERT INTO bandit_arms (dimension, arm_id, alpha, beta, updated_at)
+        VALUES (%s, %s, 1, 1, %s)
+        ON CONFLICT (dimension, arm_id) DO NOTHING
+        """,
+        (dimension, arm_id, now),
+    )
+    execute(
+        """
+        UPDATE bandit_arms
+        SET alpha = alpha + %s, beta = beta + %s, updated_at = %s
+        WHERE dimension = %s AND arm_id = %s
+        """,
+        (1 if success else 0, 0 if success else 1, now, dimension, arm_id),
+    )
+    if feed_item_id is not None:
+        execute(
             """
-            INSERT OR IGNORE INTO bandit_arms (dimension, arm_id, alpha, beta, updated_at)
-            VALUES (?, ?, 1, 1, ?)
+            INSERT INTO bandit_observations
+                (feed_item_id, dimension, arm_id, success, observed_at)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (feed_item_id, dimension) DO NOTHING
             """,
-            (dimension, arm_id, now),
+            (feed_item_id, dimension, arm_id, 1 if success else 0, now),
         )
-        conn.execute(
-            """
-            UPDATE bandit_arms
-            SET alpha = alpha + ?, beta = beta + ?, updated_at = ?
-            WHERE dimension = ? AND arm_id = ?
-            """,
-            (1 if success else 0, 0 if success else 1, now, dimension, arm_id),
-        )
-        if feed_item_id is not None:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO bandit_observations
-                    (feed_item_id, dimension, arm_id, success, observed_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (feed_item_id, dimension, arm_id, 1 if success else 0, now),
-            )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -137,17 +138,16 @@ def _load_scored_posts() -> list[dict]:
     """
     from aibp.self_learning.reward import compute_rewards_for_posts
 
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT pf.feed_item_id, pf.posted_at, pf.strategy_rubric
-            FROM post_features pf
-            WHERE pf.target_channel = 'main'
-              AND datetime(pf.posted_at) <= datetime('now', '-{ENGAGEMENT_HORIZON_HOURS} hours')
-            ORDER BY pf.posted_at ASC
-            """
-        ).fetchall()
-        posts = [dict(r) for r in rows]
+    rows = fetch_all(
+        f"""
+        SELECT pf.feed_item_id, pf.posted_at, pf.strategy_rubric
+        FROM post_features pf
+        WHERE pf.target_channel = 'main'
+          AND pf.posted_at <= now() - interval '{ENGAGEMENT_HORIZON_HOURS} hours'
+        ORDER BY pf.posted_at ASC
+        """
+    )
+    posts = [dict(r) for r in rows]
 
     scored = compute_rewards_for_posts(posts)
     for post in scored:
@@ -166,14 +166,11 @@ def update_from_engagement() -> int:
     if not posts:
         return 0
 
-    with sqlite_conn() as conn:
-        processed = {
-            r["feed_item_id"]
-            for r in conn.execute(
-                "SELECT feed_item_id FROM bandit_observations WHERE dimension = ?",
-                (RUBRIC_DIMENSION,),
-            )
-        }
+    processed_rows = fetch_all(
+        "SELECT feed_item_id FROM bandit_observations WHERE dimension = %s",
+        (RUBRIC_DIMENSION,),
+    )
+    processed = {r["feed_item_id"] for r in processed_rows}
 
     recorded = 0
     for i, post in enumerate(posts):
