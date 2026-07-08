@@ -6,12 +6,13 @@ P(variant > control) via bootstrap (ADR-0008), decides promote or reject.
 """
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 
 import structlog
+from psycopg2.extras import Json
 
-from aibp.self_learning.db import get_snapshot_at_horizon, log_autopilot_event, sqlite_conn
+from aibp.db.connection import execute, fetch_all, fetch_one
+from aibp.self_learning.db import get_snapshot_at_horizon, log_autopilot_event
 from aibp.self_learning.safety import check_rate_limit, is_autopilot_paused
 from aibp.utils.config import PROJECT_ROOT, load_policy
 
@@ -20,22 +21,31 @@ log = structlog.get_logger()
 POLICY_PATH = PROJECT_ROOT / "config" / "policy.yaml"
 
 
+def _as_dt(value):
+    """Coerce a DB timestamp (datetime) or ISO string (tests) to datetime."""
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(value)
+
+
 def get_ready_experiments() -> list[dict]:
-    """Get shadow_running experiments older than the experiment window."""
+    """Get shadow_running experiments older than their tier's experiment window.
+
+    (Issue #42 will make the window per-tier; here we keep the legacy single
+    window until #42 lands. This task ports to PG syntax only.)
+    """
     policy = load_policy()
     window_days = policy.get("safety", {}).get("experiment_window_days", 7)
-    window_ago = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, started_at, experiment_type, hypothesis,
-                   policy_before, policy_after, assignment_mode
-            FROM experiments_log
-            WHERE status = 'shadow_running' AND started_at < ?
-            """,
-            (window_ago,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+    window_ago = datetime.now(UTC) - timedelta(days=window_days)
+    return fetch_all(
+        """
+        SELECT id, started_at, experiment_type, hypothesis,
+               policy_before, policy_after, assignment_mode
+        FROM experiments_log
+        WHERE status = 'shadow_running' AND started_at < %s
+        """,
+        (window_ago,),
+    )
 
 
 def get_engagement_for_policy_version(policy_version: str, since: str | None = None) -> list[dict]:
@@ -53,16 +63,15 @@ def get_engagement_for_policy_version(policy_version: str, since: str | None = N
     query = """
         SELECT pf.feed_item_id, pf.posted_at, pf.slot, pf.target_channel
         FROM post_features pf
-        WHERE pf.policy_version = ?
+        WHERE pf.policy_version = %s
           AND pf.target_channel = 'main'
     """
     params: list = [policy_version]
     if since is not None:
-        query += " AND pf.posted_at >= ?"
+        query += " AND pf.posted_at >= %s"
         params.append(since)
 
-    with sqlite_conn() as conn:
-        posts = [dict(r) for r in conn.execute(query, params).fetchall()]
+    posts = fetch_all(query, tuple(params))
 
     result = []
     for post in posts:
@@ -220,8 +229,7 @@ def make_decision(experiment: dict) -> dict:
     control_rates = compute_reward_rates(control_posts, policy=policy)
     shadow_rates = compute_reward_rates(shadow_posts, policy=policy)
 
-    exp_age_days = (datetime.now(UTC) -
-                    datetime.fromisoformat(experiment["started_at"])).days
+    exp_age_days = (datetime.now(UTC) - _as_dt(experiment["started_at"])).days
 
     safety = policy.get("safety", {})
     window_days = safety.get("experiment_window_days", 14)
@@ -237,47 +245,42 @@ def make_decision(experiment: dict) -> dict:
 
 def apply_promotion(experiment: dict, decision: dict) -> bool:
     """Write the winning policy to production and finalize the experiment."""
-    # Load shadow policy
-    with sqlite_conn() as conn:
-        row = conn.execute(
-            "SELECT json_blob, yaml_content FROM policies WHERE version = ?",
-            (experiment["policy_after"],),
-        ).fetchone()
-        if not row:
-            return False
+    row = fetch_one(
+        "SELECT json_blob, yaml_content FROM policies WHERE version = %s",
+        (experiment["policy_after"],),
+    )
+    if not row:
+        return False
 
-    # Apply to production policy.yaml
-    prod_policy = json.loads(row["json_blob"])
+    prod_policy = row["json_blob"]  # jsonb → already dict, no json.loads
     prod_policy["version"] = experiment["policy_after"]
 
     with open(POLICY_PATH, "w", encoding="utf-8") as f:
         import yaml
         yaml.dump(prod_policy, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
-    # Update experiment
-    with sqlite_conn() as conn:
-        conn.execute(
-            """
-            UPDATE experiments_log
-            SET status = 'promoted',
-                finished_at = ?,
-                control_engagement = ?,
-                shadow_engagement = ?,
-                effect_size = ?,
-                p_value = ?,
-                decision_reason = ?
-            WHERE id = ?
-            """,
-            (
-                datetime.now(UTC).isoformat(),
-                json.dumps(decision["control_engagement"]),
-                json.dumps(decision["shadow_engagement"]),
-                decision["effect_size"],
-                decision["p_value"],
-                decision["reason"],
-                experiment["id"],
-            ),
-        )
+    execute(
+        """
+        UPDATE experiments_log
+        SET status = 'promoted',
+            finished_at = %s,
+            control_engagement = %s,
+            shadow_engagement = %s,
+            effect_size = %s,
+            p_value = %s,
+            decision_reason = %s
+        WHERE id = %s
+        """,
+        (
+            datetime.now(UTC),
+            Json(decision["control_engagement"]),
+            Json(decision["shadow_engagement"]),
+            decision["effect_size"],
+            decision["p_value"],
+            decision["reason"],
+            experiment["id"],
+        ),
+    )
 
     log_autopilot_event("change_applied", experiment_id=experiment["id"],
                        details={"action": "promote", "policy": experiment["policy_after"]})
@@ -287,27 +290,26 @@ def apply_promotion(experiment: dict, decision: dict) -> bool:
 
 def mark_pending_approval(experiment: dict, decision: dict) -> None:
     """Park a high-risk experiment until a human approves it (issue #20)."""
-    with sqlite_conn() as conn:
-        conn.execute(
-            """
-            UPDATE experiments_log
-            SET status = 'pending_approval',
-                control_engagement = ?,
-                shadow_engagement = ?,
-                effect_size = ?,
-                p_value = ?,
-                decision_reason = ?
-            WHERE id = ?
-            """,
-            (
-                json.dumps(decision["control_engagement"]),
-                json.dumps(decision["shadow_engagement"]),
-                decision["effect_size"],
-                decision["p_value"],
-                decision["reason"],
-                experiment["id"],
-            ),
-        )
+    execute(
+        """
+        UPDATE experiments_log
+        SET status = 'pending_approval',
+            control_engagement = %s,
+            shadow_engagement = %s,
+            effect_size = %s,
+            p_value = %s,
+            decision_reason = %s
+        WHERE id = %s
+        """,
+        (
+            Json(decision["control_engagement"]),
+            Json(decision["shadow_engagement"]),
+            decision["effect_size"],
+            decision["p_value"],
+            decision["reason"],
+            experiment["id"],
+        ),
+    )
     log_autopilot_event("approval_requested", experiment_id=experiment["id"],
                        details={"experiment_type": experiment["experiment_type"]})
     log.info("experiment_pending_approval", id=experiment["id"],
@@ -339,29 +341,28 @@ def promote_experiment(experiment: dict, decision: dict) -> bool:
 
 def reject_experiment(experiment: dict, decision: dict) -> None:
     """Mark experiment as rejected."""
-    with sqlite_conn() as conn:
-        conn.execute(
-            """
-            UPDATE experiments_log
-            SET status = 'rejected',
-                finished_at = ?,
-                control_engagement = ?,
-                shadow_engagement = ?,
-                effect_size = ?,
-                p_value = ?,
-                decision_reason = ?
-            WHERE id = ?
-            """,
-            (
-                datetime.now(UTC).isoformat(),
-                json.dumps(decision.get("control_engagement", {})),
-                json.dumps(decision.get("shadow_engagement", {})),
-                decision.get("effect_size"),
-                decision.get("p_value"),
-                decision["reason"],
-                experiment["id"],
-            ),
-        )
+    execute(
+        """
+        UPDATE experiments_log
+        SET status = 'rejected',
+            finished_at = %s,
+            control_engagement = %s,
+            shadow_engagement = %s,
+            effect_size = %s,
+            p_value = %s,
+            decision_reason = %s
+        WHERE id = %s
+        """,
+        (
+            datetime.now(UTC),
+            Json(decision.get("control_engagement", {})),
+            Json(decision.get("shadow_engagement", {})),
+            decision.get("effect_size"),
+            decision.get("p_value"),
+            decision["reason"],
+            experiment["id"],
+        ),
+    )
     log.info("experiment_rejected", id=experiment["id"], reason=decision["reason"])
 
 
