@@ -21,14 +21,14 @@ from pathlib import Path
 
 import structlog
 
-from aibp.self_learning.db import get_db_path
+from aibp.utils.config import PROJECT_ROOT
 
 log = structlog.get_logger()
 
 
 def lock_path() -> Path:
-    """Lock file lives next to the self-learning SQLite DB (a known writable dir)."""
-    return get_db_path().parent / "telegram_getupdates.lock"
+    """Lock file lives in the writable data directory."""
+    return PROJECT_ROOT / "data" / "telegram_getupdates.lock"
 
 
 @contextmanager
