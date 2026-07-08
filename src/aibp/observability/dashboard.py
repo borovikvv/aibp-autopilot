@@ -9,7 +9,8 @@ from datetime import UTC, datetime, timedelta
 import structlog
 from jinja2 import Template
 
-from aibp.self_learning.db import get_snapshot_at_horizon, sqlite_conn
+from aibp.db.connection import fetch_all, fetch_one
+from aibp.self_learning.db import get_snapshot_at_horizon
 from aibp.utils.config import get_settings, load_policy
 
 log = structlog.get_logger()
@@ -86,7 +87,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
       <td>{{ exp.id }}</td>
       <td>{{ exp.experiment_type }}</td>
       <td>{{ exp.hypothesis[:80] }}...</td>
-      <td>{{ exp.started_at[:19] }}</td>
+      <td>{{ exp.started_at | fmt_ts }}</td>
       <td><code>{{ exp.policy_after }}</code></td>
     </tr>
     {% endfor %}
@@ -296,7 +297,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
     <tr><th>Time</th><th>Type</th><th>Details</th></tr>
     {% for ev in recent_events %}
     <tr>
-      <td>{{ ev.event_at[:19] }}</td>
+      <td>{{ ev.event_at | fmt_ts }}</td>
       <td>{{ ev.event_type }}</td>
       <td><code>{{ ev.details[:80] if ev.details else '' }}</code></td>
     </tr>
@@ -315,45 +316,45 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 """
 
 
+def _fmt_ts(value) -> str:
+    """Format a datetime or ISO string for the dashboard (YYYY-MM-DD HH:MM).
+
+    Returns "—" for None. PG returns timezone-aware ``datetime`` objects (not
+    subscriptable), so the Jinja template must pipe DB-derived timestamps
+    through this filter instead of slicing ``[:19]``."""
+    if value is None:
+        return "—"
+    if isinstance(value, str):
+        return value[:19].replace("T", " ")
+    return value.strftime("%Y-%m-%d %H:%M")
+
+
 def get_metrics() -> dict:
     """Get summary metrics for dashboard."""
-    week_ago = (datetime.now(UTC) - timedelta(days=7)).isoformat()
-    with sqlite_conn() as conn:
-        # Total posts
-        row = conn.execute(
-            "SELECT COUNT(DISTINCT feed_item_id) as n FROM post_features WHERE posted_at >= ?",
-            (week_ago,),
-        ).fetchone()
-        total_posts = row["n"] if row else 0
-
-        # Avg views
-        row = conn.execute(
-            """
-            SELECT AVG(em.views) as avg_views
-            FROM engagement_metrics em
-            JOIN post_features pf ON em.feed_item_id = pf.feed_item_id
-            WHERE em.measured_at >= ?
-            """,
-            (week_ago,),
-        ).fetchone()
-        avg_views = row["avg_views"] if row else None
-
-        # Active experiments
-        row = conn.execute(
-            "SELECT COUNT(*) as n FROM experiments_log WHERE status = 'shadow_running'"
-        ).fetchone()
-        active = row["n"] if row else 0
-
-        # Rollbacks 7d
-        row = conn.execute(
-            """
-            SELECT COUNT(*) as n FROM autopilot_events
-            WHERE event_type = 'rollback' AND event_at >= ?
-            """,
-            (week_ago,),
-        ).fetchone()
-        rollbacks = row["n"] if row else 0
-
+    week_ago = datetime.now(UTC) - timedelta(days=7)
+    total_posts = (fetch_one(
+        "SELECT COUNT(DISTINCT feed_item_id) as n FROM post_features WHERE posted_at >= %s",
+        (week_ago,),
+    ) or {}).get("n", 0)
+    avg_views = (fetch_one(
+        """
+        SELECT AVG(em.views) as avg_views
+        FROM engagement_metrics em
+        JOIN post_features pf ON em.feed_item_id = pf.feed_item_id
+        WHERE em.measured_at >= %s
+        """,
+        (week_ago,),
+    ) or {}).get("avg_views")
+    active = (fetch_one(
+        "SELECT COUNT(*) as n FROM experiments_log WHERE status = 'shadow_running'"
+    ) or {}).get("n", 0)
+    rollbacks = (fetch_one(
+        """
+        SELECT COUNT(*) as n FROM autopilot_events
+        WHERE event_type = 'rollback' AND event_at >= %s
+        """,
+        (week_ago,),
+    ) or {}).get("n", 0)
     return {
         "total_posts": total_posts,
         "avg_views": avg_views,
@@ -363,15 +364,13 @@ def get_metrics() -> dict:
 
 
 def get_active_experiments() -> list[dict]:
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, started_at, experiment_type, hypothesis, policy_after
-            FROM experiments_log WHERE status = 'shadow_running'
-            ORDER BY started_at DESC
-            """
-        ).fetchall()
-        return [dict(r) for r in rows]
+    return fetch_all(
+        """
+        SELECT id, started_at, experiment_type, hypothesis, policy_after
+        FROM experiments_log WHERE status = 'shadow_running'
+        ORDER BY started_at DESC
+        """
+    )
 
 
 def get_bandit_state() -> list[dict]:
@@ -381,14 +380,13 @@ def get_bandit_state() -> list[dict]:
     invisible on the experiments tables — this surfaces it. Mirrors the math
     in aibp.self_learning.bandit: E[θ] = α/(α+β), multiplier = 0.5 + E[θ],
     observations = α + β − 2 (the Beta(1,1) prior contributes 2)."""
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT dimension, arm_id, alpha, beta, updated_at
-            FROM bandit_arms
-            ORDER BY dimension, (alpha * 1.0 / (alpha + beta)) DESC
-            """
-        ).fetchall()
+    rows = fetch_all(
+        """
+        SELECT dimension, arm_id, alpha, beta, updated_at
+        FROM bandit_arms
+        ORDER BY dimension, (alpha * 1.0 / (alpha + beta)) DESC
+        """
+    )
 
     state = []
     for r in rows:
@@ -410,18 +408,16 @@ def get_bandit_state() -> list[dict]:
 
 
 def get_recent_decisions(limit: int = 10) -> list[dict]:
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, experiment_type, status, effect_size, p_value, decision_reason
-            FROM experiments_log
-            WHERE status IN ('promoted', 'rolled_back', 'rejected')
-            ORDER BY finished_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+    return fetch_all(
+        """
+        SELECT id, experiment_type, status, effect_size, p_value, decision_reason
+        FROM experiments_log
+        WHERE status IN ('promoted', 'rolled_back', 'rejected')
+        ORDER BY finished_at DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
 
 
 def get_ctr_stats(days: int = 30) -> dict:
@@ -439,17 +435,16 @@ def get_ctr_stats(days: int = 30) -> dict:
 
     clicks_by_item = {r["feed_item_id"]: r["clicks"] for r in click_rows}
 
-    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT feed_item_id, slot, policy_version, cta_variant
-            FROM post_features
-            WHERE posted_at >= ? AND target_channel = 'main'
-            ORDER BY posted_at DESC
-            """,
-            (since,),
-        ).fetchall()
+    since = datetime.now(UTC) - timedelta(days=days)
+    rows = fetch_all(
+        """
+        SELECT feed_item_id, slot, policy_version, cta_variant
+        FROM post_features
+        WHERE posted_at >= %s AND target_channel = 'main'
+        ORDER BY posted_at DESC
+        """,
+        (since,),
+    )
 
     posts = []
     for r in rows:
@@ -525,14 +520,13 @@ def _tgstat_healthy() -> bool | None:
     """Latest TGStat outcome for the dashboard (issue #25): False if the most
     recent event is a token/subscription failure, True if a success, None if
     TGStat has not run yet."""
-    with sqlite_conn() as conn:
-        row = conn.execute(
-            """
-            SELECT event_type FROM autopilot_events
-            WHERE event_type IN ('tgstat_ok', 'tgstat_token_expired')
-            ORDER BY event_at DESC LIMIT 1
-            """
-        ).fetchone()
+    row = fetch_one(
+        """
+        SELECT event_type FROM autopilot_events
+        WHERE event_type IN ('tgstat_ok', 'tgstat_token_expired')
+        ORDER BY event_at DESC LIMIT 1
+        """
+    )
     if row is None:
         return None
     return row["event_type"] == "tgstat_ok"
@@ -588,32 +582,29 @@ def get_reward_stats(days: int = 14) -> list[dict]:
     contribution to the reward, plus the raw counts behind it."""
     from aibp.self_learning.reward import compute_rewards_for_posts
 
-    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT feed_item_id, posted_at, slot
-            FROM post_features
-            WHERE posted_at >= ? AND target_channel = 'main'
-            ORDER BY posted_at DESC
-            """,
-            (since,),
-        ).fetchall()
-    return compute_rewards_for_posts([dict(r) for r in rows])
+    since = datetime.now(UTC) - timedelta(days=days)
+    rows = fetch_all(
+        """
+        SELECT feed_item_id, posted_at, slot
+        FROM post_features
+        WHERE posted_at >= %s AND target_channel = 'main'
+        ORDER BY posted_at DESC
+        """,
+        (since,),
+    )
+    return compute_rewards_for_posts(rows)
 
 
 def get_recent_events(limit: int = 20) -> list[dict]:
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT event_at, event_type, details
-            FROM autopilot_events
-            ORDER BY event_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+    return fetch_all(
+        """
+        SELECT event_at, event_type, details
+        FROM autopilot_events
+        ORDER BY event_at DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
 
 
 def run() -> int:
@@ -621,7 +612,9 @@ def run() -> int:
     s = get_settings()
     policy = load_policy()
 
-    html = Template(DASHBOARD_TEMPLATE).render(
+    template = Template(DASHBOARD_TEMPLATE)
+    template.environment.filters["fmt_ts"] = _fmt_ts
+    html = template.render(
         policy=policy,
         metrics=get_metrics(),
         active_experiments=get_active_experiments(),
