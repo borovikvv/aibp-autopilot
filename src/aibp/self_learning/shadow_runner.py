@@ -8,13 +8,13 @@ is NOT used for decisions.
 """
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 
 import structlog
 import yaml
 
-from aibp.self_learning.db import log_autopilot_event, sqlite_conn
+from aibp.db.connection import execute, fetch_all, fetch_one
+from aibp.self_learning.db import log_autopilot_event
 from aibp.self_learning.safety import check_rate_limit, is_autopilot_paused
 from aibp.utils.config import PROJECT_ROOT
 
@@ -25,34 +25,30 @@ POLICY_PATH = PROJECT_ROOT / "config" / "policy.yaml"
 
 def get_draft_experiments() -> list[dict]:
     """Get experiments with status='draft'."""
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, started_at, experiment_type, hypothesis,
-                   policy_before, policy_after, applies_to
-            FROM experiments_log
-            WHERE status = 'draft'
-            ORDER BY started_at ASC
-            """
-        ).fetchall()
-        return [dict(r) for r in rows]
+    return fetch_all(
+        """
+        SELECT id, started_at, experiment_type, hypothesis,
+               policy_before, policy_after, applies_to
+        FROM experiments_log
+        WHERE status = 'draft'
+        ORDER BY started_at ASC
+        """
+    )
 
 
 def get_shadow_policy(policy_version: str) -> dict | None:
-    """Load the experiment VARIANT policy dict by version from SQLite.
+    """Load the experiment VARIANT policy dict by version from PostgreSQL.
 
     Despite the legacy "shadow" name, this is the interleave variant (drives
     statistics), not the preview policy written to config/policy.stage.yaml
-    (see ADR-0007 / issue #22).
+    (see ADR-0007 / issue #22). The json_blob column is jsonb, so psycopg2
+    returns it as a dict already.
     """
-    with sqlite_conn() as conn:
-        row = conn.execute(
-            "SELECT json_blob FROM policies WHERE version = ?",
-            (policy_version,),
-        ).fetchone()
-        if row:
-            return json.loads(row["json_blob"])
-    return None
+    row = fetch_one(
+        "SELECT json_blob FROM policies WHERE version = %s",
+        (policy_version,),
+    )
+    return row["json_blob"] if row else None
 
 
 def apply_policy_to_stage(policy: dict) -> None:
@@ -91,15 +87,14 @@ def start_shadow(experiment: dict) -> bool:
 
     # Update experiment status; assignment_mode is set explicitly because
     # legacy DBs backfill the column with DEFAULT 'cross_channel'
-    with sqlite_conn() as conn:
-        conn.execute(
-            """
-            UPDATE experiments_log
-            SET status = 'shadow_running', started_at = ?, assignment_mode = 'interleave'
-            WHERE id = ?
-            """,
-            (datetime.now(UTC).isoformat(), experiment["id"]),
-        )
+    execute(
+        """
+        UPDATE experiments_log
+        SET status = 'shadow_running', started_at = %s, assignment_mode = 'interleave'
+        WHERE id = %s
+        """,
+        (datetime.now(UTC), experiment["id"]),
+    )
 
     log_autopilot_event("change_applied", experiment_id=experiment["id"],
                        details={"policy_version": experiment["policy_after"]})
@@ -109,17 +104,16 @@ def start_shadow(experiment: dict) -> bool:
 
 def check_expired_shadows() -> None:
     """Mark shadow experiments older than 7 days as ready for decision."""
-    week_ago = (datetime.now(UTC) - timedelta(days=7)).isoformat()
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, started_at FROM experiments_log
-            WHERE status = 'shadow_running' AND started_at < ?
-            """,
-            (week_ago,),
-        ).fetchall()
-        for row in rows:
-            log.info("shadow_ready_for_decision", experiment=row["id"], started=row["started_at"])
+    week_ago = datetime.now(UTC) - timedelta(days=7)
+    rows = fetch_all(
+        """
+        SELECT id, started_at FROM experiments_log
+        WHERE status = 'shadow_running' AND started_at < %s
+        """,
+        (week_ago,),
+    )
+    for row in rows:
+        log.info("shadow_ready_for_decision", experiment=row["id"], started=row["started_at"])
 
 
 def run() -> int:

@@ -10,13 +10,12 @@ survives restarts.
 """
 from __future__ import annotations
 
-import json
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import structlog
 
-from aibp.self_learning.db import sqlite_conn
+from aibp.db.connection import fetch_one
 
 log = structlog.get_logger()
 
@@ -33,28 +32,29 @@ def assignment_for_date(d: date) -> str:
 
 def get_active_interleave_experiment() -> dict | None:
     """Return the running interleave experiment, if any (at most one expected)."""
-    with sqlite_conn() as conn:
-        row = conn.execute(
-            """
-            SELECT id, started_at, experiment_type, hypothesis,
-                   policy_before, policy_after, assignment_mode
-            FROM experiments_log
-            WHERE status = 'shadow_running' AND assignment_mode = 'interleave'
-            ORDER BY started_at DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        return dict(row) if row else None
+    row = fetch_one(
+        """
+        SELECT id, started_at, experiment_type, hypothesis,
+               policy_before, policy_after, assignment_mode
+        FROM experiments_log
+        WHERE status = 'shadow_running' AND assignment_mode = 'interleave'
+        ORDER BY started_at DESC
+        LIMIT 1
+        """
+    )
+    return row
 
 
 def load_policy_version(version: str) -> dict | None:
-    """Load policy dict by version from SQLite policies table."""
-    with sqlite_conn() as conn:
-        row = conn.execute(
-            "SELECT json_blob FROM policies WHERE version = ?",
-            (version,),
-        ).fetchone()
-        return json.loads(row["json_blob"]) if row else None
+    """Load policy dict by version from PostgreSQL policies table.
+
+    The json_blob column is jsonb, so psycopg2 returns it as a dict already.
+    """
+    row = fetch_one(
+        "SELECT json_blob FROM policies WHERE version = %s",
+        (version,),
+    )
+    return row["json_blob"] if row else None
 
 
 def resolve_policy_for_today(default_policy: dict, today: date | None = None) -> dict:
