@@ -153,12 +153,11 @@ def update_offer_outcomes() -> int:
 
     recorded = 0
     for slug, feed_item_id, success in score_offer_rows(rows):
-        from aibp.self_learning.db import sqlite_conn
-        with sqlite_conn() as conn:
-            already = conn.execute(
-                "SELECT 1 FROM bandit_observations WHERE feed_item_id = ? AND dimension = ?",
-                (feed_item_id, OFFER_DIMENSION),
-            ).fetchone()
+        from aibp.db.connection import fetch_one
+        already = fetch_one(
+            "SELECT 1 FROM bandit_observations WHERE feed_item_id = %s AND dimension = %s",
+            (feed_item_id, OFFER_DIMENSION),
+        )
         if already:
             continue
         record_outcome(OFFER_DIMENSION, slug, success, feed_item_id=feed_item_id)

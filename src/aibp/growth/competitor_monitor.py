@@ -21,7 +21,8 @@ import httpx
 import structlog
 import yaml
 
-from aibp.self_learning.db import log_autopilot_event, sqlite_conn
+from aibp.db.connection import fetch_all, fetch_one
+from aibp.self_learning.db import log_autopilot_event
 from aibp.utils.config import PROJECT_ROOT, get_settings
 
 log = structlog.get_logger()
@@ -64,22 +65,20 @@ def load_growth_config() -> dict:
 
 def get_subscriber_series(days: int = 30) -> list[dict]:
     """Daily subscriber counts for the main channel (max snapshot per day)."""
-    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT date(em.measured_at) as day, MAX(em.subscribers_at) as subscribers
-            FROM engagement_metrics em
-            JOIN post_features pf ON pf.feed_item_id = em.feed_item_id
-            WHERE em.measured_at >= ?
-              AND pf.target_channel = 'main'
-              AND em.subscribers_at IS NOT NULL
-            GROUP BY date(em.measured_at)
-            ORDER BY day ASC
-            """,
-            (since,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+    since = datetime.now(UTC) - timedelta(days=days)
+    return fetch_all(
+        """
+        SELECT em.measured_at::date as day, MAX(em.subscribers_at) as subscribers
+        FROM engagement_metrics em
+        JOIN post_features pf ON pf.feed_item_id = em.feed_item_id
+        WHERE em.measured_at >= %s
+          AND pf.target_channel = 'main'
+          AND em.subscribers_at IS NOT NULL
+        GROUP BY em.measured_at::date
+        ORDER BY day ASC
+        """,
+        (since,),
+    )
 
 
 def compute_daily_deltas(series: list[dict]) -> list[dict]:
@@ -169,14 +168,13 @@ def _send_alert(message: str) -> None:
 
 def _recent_auth_failures(days: int = _CIRCUIT_BREAKER_WINDOW_DAYS) -> int:
     """Count tgstat_token_expired events in the window (circuit breaker input)."""
-    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
-    with sqlite_conn() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) AS n FROM autopilot_events "
-            "WHERE event_type = 'tgstat_token_expired' AND event_at >= ?",
-            (since,),
-        ).fetchone()
-        return row["n"] if row else 0
+    since = datetime.now(UTC) - timedelta(days=days)
+    row = fetch_one(
+        "SELECT COUNT(*) AS n FROM autopilot_events "
+        "WHERE event_type = 'tgstat_token_expired' AND event_at >= %s",
+        (since,),
+    )
+    return row["n"] if row else 0
 
 
 def build_recommendation(stats: dict, subscriber_value_rub: float,
@@ -222,15 +220,14 @@ def get_our_er_percent() -> float | None:
     """Own ER at the 48h horizon over the last 30 days, in percent."""
     from aibp.self_learning.db import get_snapshot_at_horizon
 
-    since = (datetime.now(UTC) - timedelta(days=30)).isoformat()
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT feed_item_id FROM post_features
-            WHERE posted_at >= ? AND target_channel = 'main'
-            """,
-            (since,),
-        ).fetchall()
+    since = datetime.now(UTC) - timedelta(days=30)
+    rows = fetch_all(
+        """
+        SELECT feed_item_id FROM post_features
+        WHERE posted_at >= %s AND target_channel = 'main'
+        """,
+        (since,),
+    )
     rates = []
     for r in rows:
         snap = get_snapshot_at_horizon(r["feed_item_id"])
