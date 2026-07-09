@@ -6,7 +6,13 @@ This test validates that all self-learning modules work together end-to-end:
   3. Decision Engine evaluates it (promote or reject)
   4. Safety rails (rate limiter, kill switch) don't block valid operations
 
-Uses temporary SQLite database — no PostgreSQL or Telegram API needed.
+Requires a live PostgreSQL: set TEST_DATABASE_URL (issue #43). The self-learning
+state now lives in the main PostgreSQL store, so this exercises the real PG path.
+
+TODO(issue #43): the body still uses the legacy SQLite fixtures
+(`sl_db.sqlite_conn`, `get_db_path`, `init_db`). Convert the data setup to PG
+(`aibp.db.connection` helpers + `apply_migrations()` against TEST_DATABASE_URL)
+and drop the temp_sqlite_db fixture. Until then the test is skipped without PG.
 """
 import json
 import os
@@ -19,6 +25,14 @@ from unittest.mock import patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+
+# Integration tests need a real PostgreSQL; skip without the env var so plain
+# `pytest` never fails on a dev machine without PG.
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "")
+pytestmark = pytest.mark.skipif(
+    not TEST_DATABASE_URL,
+    reason="TEST_DATABASE_URL not set — integration tests need a live PostgreSQL",
+)
 
 
 @pytest.fixture

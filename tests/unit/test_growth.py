@@ -1,4 +1,10 @@
-"""Tests for growth monitoring (issue #19)."""
+"""Tests for growth monitoring (issue #19).
+
+Hermetic: growth reads via the PG ``fetch_all``/``fetch_one`` helpers and logs
+events via ``log_autopilot_event``. The run()-level tests already patch the
+high-level growth functions; the DB-touching tests patch those helpers with an
+in-memory fake so no PostgreSQL (or SQLite) is needed.
+"""
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,18 +24,9 @@ from aibp.growth.competitor_monitor import (
     fetch_competitor_stats,
     get_subscriber_series,
 )
-from aibp.self_learning import db as sl_db
-
-
-@pytest.fixture()
-def temp_db(tmp_path):
-    with patch.object(sl_db, "get_db_path", return_value=tmp_path / "test.db"):
-        sl_db.init_db()
-        yield
-
 
 # ═══════════════════════════════════════════════════════════════════
-# Daily deltas + anomaly detection
+# Daily deltas + anomaly detection (pure functions)
 # ═══════════════════════════════════════════════════════════════════
 
 def test_compute_daily_deltas():
@@ -64,33 +61,23 @@ def test_detect_churn_anomaly_quiet_on_small_drop():
     assert detect_churn_anomaly(deltas, threshold_pct=5.0) is None
 
 
-def test_subscriber_series_from_snapshots(temp_db):
+def test_subscriber_series_from_snapshots():
+    """get_subscriber_series aggregates the daily MAX snapshot from PG;
+    patch competitor_monitor.fetch_all to return canned rows."""
     now = datetime.now(UTC)
-    with sl_db.sqlite_conn() as conn:
-        conn.execute(
-            """
-            INSERT INTO post_features (feed_item_id, posted_at, slot, pipeline_env,
-                                       target_channel, policy_version, policy_blob)
-            VALUES (1, ?, 'morning', 'prod', 'main', 'v1', '{}')
-            """,
-            ((now - timedelta(days=3)).isoformat(),),
-        )
-        for days_ago, subs in [(2, 100), (1, 105), (0, 103)]:
-            conn.execute(
-                """
-                INSERT INTO engagement_metrics (feed_item_id, measured_at, views, subscribers_at)
-                VALUES (1, ?, 50, ?)
-                """,
-                ((now - timedelta(days=days_ago)).isoformat(), subs),
-            )
-
-    series = get_subscriber_series(days=14)
+    rows = [
+        {"day": (now - timedelta(days=2)).date(), "subscribers": 100},
+        {"day": (now - timedelta(days=1)).date(), "subscribers": 105},
+        {"day": now.date(), "subscribers": 103},
+    ]
+    with patch.object(competitor_monitor, "fetch_all", return_value=rows):
+        series = get_subscriber_series(days=14)
     assert len(series) == 3
     assert [p["subscribers"] for p in series] == [100, 105, 103]
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Recommendations (no payment automation)
+# Recommendations (no payment automation) — pure functions
 # ═══════════════════════════════════════════════════════════════════
 
 STATS = {"username": "chan", "subscribers": 20000, "avg_post_reach": 5000, "er_percent": 25.0}
@@ -193,8 +180,8 @@ def test_fetch_returns_stats_on_ok():
 # ═══════════════════════════════════════════════════════════════════
 
 @pytest.fixture()
-def growth_env(temp_db, tmp_path, monkeypatch):
-    """Temp SQLite + competitors configured + token set + reports to tmp."""
+def growth_env(tmp_path, monkeypatch):
+    """Temp reports dir + competitors configured + token set + no live DB."""
     monkeypatch.setenv("TGSTAT_API_TOKEN", "TOKEN")
     monkeypatch.setattr(competitor_monitor, "REPORTS_DIR", tmp_path / "growth")
     monkeypatch.setattr(competitor_monitor, "load_growth_config",
@@ -202,37 +189,34 @@ def growth_env(temp_db, tmp_path, monkeypatch):
                                  "channels": [{"username": "chan"}]})
     monkeypatch.setattr(competitor_monitor, "get_subscriber_series", lambda days=30: [])
     monkeypatch.setattr(competitor_monitor, "get_our_er_percent", lambda: None)
+    # _recent_auth_failures + traffic_sources CPS summary hit PG; stub them so
+    # run() stays hermetic (no live connection).
+    monkeypatch.setattr(competitor_monitor, "_recent_auth_failures", lambda days=21: 0)
+    monkeypatch.setattr("aibp.growth.traffic_sources.cps_summary", lambda: [])
     yield
 
 
-def _count_events(event_type: str) -> int:
-    with sl_db.sqlite_conn() as conn:
-        return conn.execute(
-            "SELECT COUNT(*) AS n FROM autopilot_events WHERE event_type = ?",
-            (event_type,),
-        ).fetchone()["n"]
-
-
 def test_run_alerts_and_logs_event_on_token_error(growth_env):
+    events = []
+
     def boom(username, token):
         raise TGStatAuthError("token invalid")
 
     with patch.object(competitor_monitor, "fetch_competitor_stats", boom), \
-         patch.object(competitor_monitor, "_send_alert") as alert:
+         patch.object(competitor_monitor, "_send_alert"), \
+         patch.object(competitor_monitor, "log_autopilot_event",
+                      side_effect=lambda *a, **kw: events.append(a)):
         competitor_monitor.run()
 
-    alert.assert_called_once()
-    assert _count_events("tgstat_token_expired") == 1
+    assert len(events) == 1
+    assert events[0][0] == "tgstat_token_expired"
 
 
 def test_run_circuit_breaker_skips_after_repeated_failures(growth_env):
-    from aibp.self_learning.db import log_autopilot_event
-
-    # Three prior weekly auth failures within the window → breaker open
-    for _ in range(3):
-        log_autopilot_event("tgstat_token_expired", details={"error": "token invalid"})
-
-    with patch.object(competitor_monitor, "fetch_competitor_stats") as fetch, \
+    # Three prior weekly auth failures within the window → breaker open.
+    # _recent_auth_failures reads via fetch_one; patch it to report 3.
+    with patch.object(competitor_monitor, "_recent_auth_failures", return_value=3), \
+         patch.object(competitor_monitor, "fetch_competitor_stats") as fetch, \
          patch.object(competitor_monitor, "_send_alert") as alert:
         competitor_monitor.run()
 
@@ -241,11 +225,13 @@ def test_run_circuit_breaker_skips_after_repeated_failures(growth_env):
 
 
 def test_run_logs_ok_event_on_success(growth_env):
+    events = []
     ok_stats = {"username": "chan", "subscribers": 20000, "avg_post_reach": 5000,
                 "er_percent": 25.0, "daily_reach": 3000}
     with patch.object(competitor_monitor, "fetch_competitor_stats", return_value=ok_stats), \
-         patch.object(competitor_monitor, "_send_alert"):
+         patch.object(competitor_monitor, "_send_alert"), \
+         patch.object(competitor_monitor, "log_autopilot_event",
+                      side_effect=lambda *a, **kw: events.append(a)):
         competitor_monitor.run()
 
-    assert _count_events("tgstat_ok") == 1
-    assert _count_events("tgstat_token_expired") == 0
+    assert [e[0] for e in events] == ["tgstat_ok"]

@@ -1,11 +1,17 @@
 """Tests for the composite reward (issue #37, ADR-0010).
 
+Hermetic: the reward module reads via ``fetch_all`` (subscriber series + the
+all-posted boundaries) and ``get_snapshot_at_horizon`` from the PG layer. These
+tests seed an in-memory fake and patch those names so no PostgreSQL (or SQLite)
+is needed. Pure reward math tests need no fixture.
+
 Covers: pure reward math, Δsubs attribution edge cases (2 posts/day window
 clipping, overnight growth, churn), subscriber-series interpolation, click
 degradation when PostgreSQL is unreachable, and the decision-engine /
 bandit integration.
 """
 import sys
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -14,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import pytest
 
-from aibp.self_learning import db as sl_db
 from aibp.self_learning import reward as reward_mod
 from aibp.self_learning.reward import (
     DEFAULT_REWARD_WEIGHTS,
@@ -24,42 +29,89 @@ from aibp.self_learning.reward import (
     subs_at,
 )
 
-
-@pytest.fixture()
-def temp_db(tmp_path):
-    with patch.object(sl_db, "get_db_path", return_value=tmp_path / "test.db"):
-        sl_db.init_db()
-        yield
-
-
 NOW = datetime(2026, 7, 1, 10, 0, tzinfo=UTC)
 
 
-def _insert_post(feed_item_id: int, posted_at: datetime, channel: str = "main",
-                 rubric: str = "anti_hype") -> None:
-    with sl_db.sqlite_conn() as conn:
-        conn.execute(
-            """
-            INSERT INTO post_features
-                (feed_item_id, posted_at, slot, pipeline_env, target_channel,
-                 strategy_rubric, policy_version, policy_blob)
-            VALUES (?, ?, 'morning', 'prod', ?, ?, 'v1', '{}')
-            """,
-            (feed_item_id, posted_at.isoformat(), channel, rubric),
-        )
+class RewardFake:
+    """In-memory stand-in for the PG reads reward.compute_rewards_for_posts uses.
+
+    Holds posts + snapshots; supplies the subscriber series, the all-posted
+    boundary list, and horizon snapshots exactly as the PG layer would return
+    them (as plain dicts).
+    """
+
+    def __init__(self):
+        self.snapshots: dict[int, list[dict]] = {}
+        self.posts: dict[int, dict] = {}
+
+    def add_post(self, feed_item_id, posted_at, channel="main"):
+        self.posts[feed_item_id] = {"feed_item_id": feed_item_id,
+                                    "posted_at": posted_at, "target_channel": channel}
+
+    def add_snapshot(self, feed_item_id, measured_at, views, subs=1000, forwards=0):
+        self.snapshots.setdefault(feed_item_id, []).append({
+            "views": views, "forwards": forwards, "replies": 0,
+            "reactions_count": 0, "subscribers_at": subs,
+            "measured_at": measured_at,
+        })
+
+    # ── patched helpers ─────────────────────────────────────────────
+    def load_subscriber_series(self):
+        rows = []
+        for fid, snaps in self.snapshots.items():
+            if self.posts.get(fid, {}).get("target_channel") != "main":
+                continue
+            for s in snaps:
+                if s["subscribers_at"] is not None:
+                    rows.append((s["measured_at"], s["subscribers_at"]))
+        rows.sort()
+        return rows
+
+    def all_posted_main(self):
+        return [p["posted_at"] for p in self.posts.values()
+                if p["target_channel"] == "main"]
+
+    def snapshot_at_horizon(self, feed_item_id, hours=48):
+        snaps = self.snapshots.get(feed_item_id)
+        if not snaps:
+            return None
+        post = self.posts.get(feed_item_id)
+        if post is None:
+            return None
+        posted_at = post["posted_at"]
+        horizon = posted_at + timedelta(hours=hours)
+        # nearest snapshot to posted_at + hours
+        nearest = min(snaps, key=lambda s: abs(s["measured_at"] - horizon))
+        return dict(nearest)
+
+    def fetch_all(self, sql, params=()):
+        sql_stripped = " ".join(sql.split())
+        if "SELECT em.measured_at, em.subscribers_at" in sql_stripped:
+            return [{"measured_at": t, "subscribers_at": v} for t, v in self.load_subscriber_series()]
+        if "SELECT posted_at FROM post_features WHERE target_channel = 'main'" in sql_stripped:
+            return [{"posted_at": t} for t in self.all_posted_main()]
+        raise AssertionError(f"unexpected fetch_all: {sql!r}")
+
+    def patch_all(self):
+        return [
+            patch.object(reward_mod, "fetch_all", self.fetch_all),
+            patch.object(reward_mod, "load_subscriber_series", self.load_subscriber_series),
+            patch.object(reward_mod, "get_snapshot_at_horizon", self.snapshot_at_horizon),
+        ]
 
 
-def _insert_snapshot(feed_item_id: int, measured_at: datetime, views: int,
-                     subs: int = 1000, forwards: int = 0) -> None:
-    with sl_db.sqlite_conn() as conn:
-        conn.execute(
-            """
-            INSERT INTO engagement_metrics
-                (feed_item_id, measured_at, views, forwards, subscribers_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (feed_item_id, measured_at.isoformat(), views, forwards, subs),
-        )
+@pytest.fixture()
+def fake():
+    return RewardFake()
+
+
+@contextmanager
+def patched(fake):
+    """Apply RewardFake's read patches for the duration of the block."""
+    with ExitStack() as stack:
+        for p in fake.patch_all():
+            stack.enter_context(p)
+        yield
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -169,12 +221,12 @@ def _no_clicks(items, horizon_hours=48):
     return {}
 
 
-def test_rewards_for_posts_end_to_end(temp_db):
-    _insert_post(1, NOW)
-    _insert_snapshot(1, NOW + timedelta(hours=48), views=300, subs=1000, forwards=2)
+def test_rewards_for_posts_end_to_end(fake):
+    fake.add_post(1, NOW)
+    fake.add_snapshot(1, NOW + timedelta(hours=48), views=300, subs=1000, forwards=2)
     posts = [{"feed_item_id": 1, "posted_at": NOW.isoformat()}]
 
-    with patch.object(reward_mod, "fetch_clicks_at_horizon", side_effect=_no_clicks):
+    with patch.object(reward_mod, "fetch_clicks_at_horizon", side_effect=_no_clicks), patched(fake):
         scored = compute_rewards_for_posts(posts, policy={})
 
     assert len(scored) == 1
@@ -187,38 +239,39 @@ def test_rewards_for_posts_end_to_end(temp_db):
     )
 
 
-def test_rewards_skips_posts_without_snapshot(temp_db):
-    _insert_post(1, NOW)  # no snapshot
+def test_rewards_skips_posts_without_snapshot(fake):
+    fake.add_post(1, NOW)  # no snapshot
     posts = [{"feed_item_id": 1, "posted_at": NOW.isoformat()}]
-    with patch.object(reward_mod, "fetch_clicks_at_horizon", side_effect=_no_clicks):
+    with patch.object(reward_mod, "fetch_clicks_at_horizon", side_effect=_no_clicks), patched(fake):
         assert compute_rewards_for_posts(posts, policy={}) == []
 
 
-def test_rewards_window_clipped_by_unscored_neighbor(temp_db):
+def test_rewards_window_clipped_by_unscored_neighbor(fake):
     """The next-post boundary must come from ALL main posts, even ones not
     in the scored subset (interleaving: control clips variant's window)."""
     evening = NOW + timedelta(hours=8)
-    _insert_post(1, NOW)
-    _insert_post(2, evening)  # different policy — not passed in, still clips
-    _insert_snapshot(1, NOW, views=0, subs=1000)
-    _insert_snapshot(1, NOW + timedelta(hours=8), views=200, subs=1004)
-    _insert_snapshot(1, NOW + timedelta(hours=48), views=300, subs=1020)
-    _insert_snapshot(2, NOW + timedelta(hours=48), views=100, subs=1020)
+    fake.add_post(1, NOW)
+    fake.add_post(2, evening)  # different policy — not passed in, still clips
+    fake.add_snapshot(1, NOW, views=0, subs=1000)
+    fake.add_snapshot(1, NOW + timedelta(hours=8), views=200, subs=1004)
+    fake.add_snapshot(1, NOW + timedelta(hours=48), views=300, subs=1020)
+    fake.add_snapshot(2, NOW + timedelta(hours=48), views=100, subs=1020)
 
     posts = [{"feed_item_id": 1, "posted_at": NOW.isoformat()}]
-    with patch.object(reward_mod, "fetch_clicks_at_horizon", side_effect=_no_clicks):
+    with patch.object(reward_mod, "fetch_clicks_at_horizon", side_effect=_no_clicks), patched(fake):
         scored = compute_rewards_for_posts(posts, policy={})
 
     assert scored[0]["subs_delta"] == pytest.approx(4)  # 1000→1004, not →1020
 
 
-def test_clicks_degrade_gracefully_when_pg_down(temp_db):
+def test_clicks_degrade_gracefully_when_pg_down(fake):
     """PG unreachable → clicks component is 0 for all posts, reward still computed."""
-    _insert_post(1, NOW)
-    _insert_snapshot(1, NOW + timedelta(hours=48), views=300, subs=1000)
+    fake.add_post(1, NOW)
+    fake.add_snapshot(1, NOW + timedelta(hours=48), views=300, subs=1000)
     posts = [{"feed_item_id": 1, "posted_at": NOW.isoformat()}]
-    # No patching: fetch_clicks_at_horizon hits real PG config and fails → {}
-    scored = compute_rewards_for_posts(posts, policy={})
+    # No click patching: fetch_clicks_at_horizon hits real PG config and fails → {}
+    with patched(fake):
+        scored = compute_rewards_for_posts(posts, policy={})
     assert len(scored) == 1
     assert scored[0]["clicks"] == 0
 
@@ -227,28 +280,31 @@ def test_clicks_degrade_gracefully_when_pg_down(temp_db):
 # Integration: decision engine + bandit use the composite reward
 # ═══════════════════════════════════════════════════════════════════
 
-def test_decision_engine_reward_rates(temp_db):
+def test_decision_engine_reward_rates(fake):
     from aibp.self_learning.decision_engine import compute_reward_rates
 
-    _insert_post(1, NOW)
-    _insert_snapshot(1, NOW + timedelta(hours=48), views=300, subs=1000, forwards=2)
+    fake.add_post(1, NOW)
+    fake.add_snapshot(1, NOW + timedelta(hours=48), views=300, subs=1000, forwards=2)
     posts = [{"feed_item_id": 1, "posted_at": NOW.isoformat()}]
 
-    with patch.object(reward_mod, "fetch_clicks_at_horizon", side_effect=_no_clicks):
+    with patch.object(reward_mod, "fetch_clicks_at_horizon", side_effect=_no_clicks), patched(fake):
         rates = compute_reward_rates(posts, policy={})
 
     assert len(rates) == 1
     assert rates[0] > 0.3  # views alone give 0.3; forwards push it above
 
 
-def test_bandit_scores_posts_by_composite_reward(temp_db):
+def test_bandit_scores_posts_by_composite_reward(fake):
     from aibp.self_learning.bandit import _load_scored_posts
 
     posted = datetime.now(UTC) - timedelta(hours=72)
-    _insert_post(1, posted, rubric="anti_hype")
-    _insert_snapshot(1, posted + timedelta(hours=48), views=300, subs=1000, forwards=4)
+    fake.add_post(1, posted, channel="main")
+    fake.add_snapshot(1, posted + timedelta(hours=48), views=300, subs=1000, forwards=4)
 
-    with patch.object(reward_mod, "fetch_clicks_at_horizon", side_effect=_no_clicks):
+    with patch.object(reward_mod, "fetch_clicks_at_horizon", side_effect=_no_clicks), \
+         patch("aibp.self_learning.bandit.fetch_all", return_value=[
+             {"feed_item_id": 1, "posted_at": posted.isoformat(), "strategy_rubric": "anti_hype"}]), \
+         patched(fake):
         scored = _load_scored_posts()
 
     assert len(scored) == 1

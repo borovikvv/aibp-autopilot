@@ -10,15 +10,25 @@ import pytest
 from aibp.tracking import healthcheck
 
 
+# _state_path() now derives from PROJECT_ROOT / "data/..." (no SQLite DB path).
+# Keep each test hermetic by pointing the failure-counter file at a tmp dir.
 @pytest.fixture()
 def temp_state(tmp_path):
-    with patch.object(healthcheck, "get_db_path", return_value=tmp_path / "test.db"):
+    state_file = tmp_path / "redirect_health.state"
+    with patch.object(healthcheck, "_state_path", return_value=state_file):
         yield tmp_path
 
 
 # ═══════════════════════════════════════════════════════════════════
 # Failure counter persistence
 # ═══════════════════════════════════════════════════════════════════
+
+def test_state_path_in_data_dir():
+    """_state_path() is relative to the project data directory (no DB path)."""
+    from aibp.utils.config import PROJECT_ROOT
+
+    assert healthcheck._state_path() == PROJECT_ROOT / "data" / "redirect_health.state"
+
 
 def test_counter_defaults_to_zero(temp_state):
     assert healthcheck._read_failures() == 0

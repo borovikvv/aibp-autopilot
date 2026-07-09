@@ -1,7 +1,7 @@
 # AIBP Autopilot — Makefile
 # Common commands for development and operations
 
-.PHONY: install db-init db-check smoke-test test lint typecheck
+.PHONY: install db-init db-check smoke-test test test-integration lint typecheck
 .PHONY: collect-rss enrich generate-morning generate-evening publish
 .PHONY: collect-engagement mine-patterns update-policy run-shadow decide rollback-check safety-check dashboard
 .PHONY: hermes-register docker-build docker-up docker-down
@@ -72,6 +72,12 @@ test:
 
 test-cov:
         $(PYTHON) -m pytest tests/ --cov=aibp --cov-report=term-missing
+
+# ─── Integration tests (need a live PostgreSQL) ────────────────────
+# Run: TEST_DATABASE_URL=postgresql://aibp:aibp@localhost:5432/aibp_test make test-integration
+# Quick PG: docker run --rm -e POSTGRES_DB=aibp_test -e POSTGRES_USER=aibp -e POSTGRES_PASSWORD=aibp -p 5432:5432 postgres:16
+test-integration:
+        $(PYTHON) -m pytest tests/integration/ -v --tb=short
 
 lint:
         $(PYTHON) -m ruff check src/ tests/
