@@ -48,7 +48,7 @@ Single command that:
 
 Files in `.gitignore` are never touched by `git pull`:
 - `.env` (secrets)
-- `data/` (SQLite experiments DB)
+- `data/` (local runtime artifacts)
 - `reports/` (logs, dashboards)
 - `backups/` (DB backups)
 

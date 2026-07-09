@@ -113,7 +113,7 @@ nano .env
 make db-init
 ```
 
-Это создаст все таблицы в PostgreSQL + SQLite (для self-learning).
+Это создаст все таблицы в PostgreSQL (включая self-learning, миграция 0009).
 
 ### Шаг 6: Smoke-тест
 
@@ -279,9 +279,6 @@ docker restart aibp-postgres
 ```bash
 # Ежедневный бэкап (добавь в crontab)
 pg_dump $DATABASE_URL | gzip > backups/aibp_$(date +%Y%m%d).sql.gz
-
-# Бэкап SQLite (эксперименты)
-cp data/self_learning.db backups/self_learning_$(date +%Y%m%d).db
 ```
 
 Храни бэкапы off-site (S3, другой сервер).

@@ -270,7 +270,7 @@ def print_next_steps() -> None:
 
    - Logs: {BLUE}reports/logs/{NC}
    - LLM costs: {BLUE}reports/llm_cost.jsonl{NC}
-   - Self-learning data: {BLUE}data/self_learning.db{NC}
+   - Self-learning data: PostgreSQL (migration 0009)
    - Dashboard (after first cron run): {BLUE}reports/self_learning/dashboard.html{NC}
 
 {BOLD}4. If something breaks:{NC}
