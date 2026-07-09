@@ -199,16 +199,12 @@ def test_update_skips_posts_without_baseline(fake_pg):
         assert bandit.update_from_engagement() == 0
 
 
-def test_fresh_posts_below_horizon_not_scored(fake_pg):
-    """Posts are filtered by _load_scored_posts (the 48h horizon lives there);
-    update_from_engagement only sees what that query returns, so a horizon
-    filter is verified at the bandit level by simply not feeding it the post."""
-    posts = [_make_post(i + 1, "r", 0.10) for i in range(6)]
-    # post 7 (too fresh) is NOT returned by _load_scored_posts
-    with _stub_load_scored_posts(posts):
-        bandit.update_from_engagement()
-    assert 7 not in {fid for fid, _ in fake_pg.observations}
-
+# NOTE (issue #43): the 48h engagement horizon filter is enforced by an SQL
+# condition inside `_load_scored_posts()` (the `WHERE posted_at <= now() -
+# interval '<ENGAGEMENT_HORIZON_HOURS> hours'` clause in bandit.py), not by
+# Python logic. It therefore cannot be meaningfully unit-tested here — the
+# in-memory FakePG would just echo back whatever we stubbed — and is covered
+# instead by integration tests that run against PostgreSQL.
 
 # references kept to satisfy import analyzers; sl_db is the module under test
 _ = sl_db
