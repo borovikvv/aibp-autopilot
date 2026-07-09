@@ -46,7 +46,6 @@ class Settings:
     app_timezone: str
     log_level: str
     policy_path: Path
-    self_learning_db_path: Path
     rss_feeds_path: Path
 
     # Dashboard
@@ -81,7 +80,6 @@ class Settings:
             app_timezone=os.getenv("APP_TIMEZONE", "Europe/Moscow"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             policy_path=Path(os.getenv("POLICY_PATH", "config/policy.yaml")),
-            self_learning_db_path=Path(os.getenv("SELF_LEARNING_DB_PATH", "data/self_learning.db")),
             rss_feeds_path=Path(os.getenv("RSS_FEEDS_PATH", "config/rss_feeds.yaml")),
             dashboard_output_path=Path(os.getenv("DASHBOARD_OUTPUT_PATH", "/srv/static/aibp/dashboard.html")),
             dashboard_base_url=os.getenv("DASHBOARD_BASE_URL", "https://cockpit.borovikvv.ru/aibp"),

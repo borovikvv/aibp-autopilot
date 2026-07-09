@@ -16,12 +16,10 @@ def cli() -> None:
 
 @cli.command()
 def db_init() -> None:
-    """Initialize PostgreSQL and SQLite databases."""
+    """Initialize PostgreSQL database and load RSS feeds."""
     from aibp.db.init_db import init_db, load_rss_feeds_to_db
-    from aibp.self_learning.db import init_db as init_sqlite
     init_db()
     n = load_rss_feeds_to_db()
-    init_sqlite()
     click.echo(f"✅ DB initialized. Loaded {n} RSS feeds.")
 
 
