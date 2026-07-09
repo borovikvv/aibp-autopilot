@@ -14,6 +14,7 @@ from psycopg2.extras import Json
 from aibp.db.connection import execute, fetch_all, fetch_one
 from aibp.self_learning.db import get_snapshot_at_horizon, log_autopilot_event
 from aibp.self_learning.safety import check_rate_limit, is_autopilot_paused
+from aibp.self_learning.tiers import load_tier_config
 from aibp.utils.config import PROJECT_ROOT, load_policy
 
 log = structlog.get_logger()
@@ -29,23 +30,24 @@ def _as_dt(value):
 
 
 def get_ready_experiments() -> list[dict]:
-    """Get shadow_running experiments older than their tier's experiment window.
-
-    (Issue #42 will make the window per-tier; here we keep the legacy single
-    window until #42 lands. This task ports to PG syntax only.)
-    """
-    policy = load_policy()
-    window_days = policy.get("safety", {}).get("experiment_window_days", 7)
-    window_ago = datetime.now(UTC) - timedelta(days=window_days)
-    return fetch_all(
+    """Get shadow_running experiments older than their tier's experiment window."""
+    now = datetime.now(UTC)
+    all_experiments = fetch_all(
         """
         SELECT id, started_at, experiment_type, hypothesis,
                policy_before, policy_after, assignment_mode
         FROM experiments_log
-        WHERE status = 'shadow_running' AND started_at < %s
-        """,
-        (window_ago,),
+        WHERE status = 'shadow_running'
+        ORDER BY started_at ASC
+        """
     )
+    ready = []
+    for exp in all_experiments:
+        tier = load_tier_config(exp["experiment_type"])
+        started = _as_dt(exp["started_at"])
+        if started <= now - timedelta(days=tier["experiment_window_days"]):
+            ready.append(exp)
+    return ready
 
 
 def get_engagement_for_policy_version(policy_version: str, since: str | None = None) -> list[dict]:
@@ -221,7 +223,7 @@ def make_decision(experiment: dict) -> dict:
     """
     # Both groups are restricted to the experiment period so they face the
     # same audience and seasonality (ADR-0007 interleaving).
-    since = experiment["started_at"]
+    since = _as_dt(experiment["started_at"])
     control_posts = get_engagement_for_policy_version(experiment["policy_before"], since=since)
     shadow_posts = get_engagement_for_policy_version(experiment["policy_after"], since=since)
 
@@ -229,17 +231,17 @@ def make_decision(experiment: dict) -> dict:
     control_rates = compute_reward_rates(control_posts, policy=policy)
     shadow_rates = compute_reward_rates(shadow_posts, policy=policy)
 
-    exp_age_days = (datetime.now(UTC) - _as_dt(experiment["started_at"])).days
+    started = _as_dt(experiment["started_at"])
+    exp_age_days = (datetime.now(UTC) - started).days
 
-    safety = policy.get("safety", {})
-    window_days = safety.get("experiment_window_days", 14)
+    tier = load_tier_config(experiment["experiment_type"], policy=policy)
     return compute_decision(
         control_rates,
         shadow_rates,
         exp_age_days,
-        promote_probability=safety.get("promote_probability", 0.95),
-        min_effect=safety.get("min_effect_pct", 5) / 100,
-        give_up_days=window_days + 7,
+        promote_probability=tier["promote_probability"],
+        min_effect=tier["min_effect_pct"] / 100,
+        give_up_days=tier["experiment_window_days"] + 7,
     )
 
 
