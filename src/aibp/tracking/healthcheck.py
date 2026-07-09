@@ -14,8 +14,7 @@ from pathlib import Path
 import httpx
 import structlog
 
-from aibp.self_learning.db import get_db_path
-from aibp.utils.config import get_settings
+from aibp.utils.config import PROJECT_ROOT, get_settings
 
 log = structlog.get_logger()
 
@@ -24,8 +23,8 @@ TELEGRAM_API = "https://api.telegram.org"
 
 
 def _state_path() -> Path:
-    """Consecutive-failure counter lives next to the self-learning SQLite DB."""
-    return get_db_path().parent / "redirect_health.state"
+    """Consecutive-failure counter lives in the writable data directory."""
+    return PROJECT_ROOT / "data" / "redirect_health.state"
 
 
 def _read_failures() -> int:
