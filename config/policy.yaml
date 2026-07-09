@@ -118,12 +118,20 @@ safety:
   # Telegram approve/reject button before promote.
   approval_required_for: [post_param, regex_gate]
 
-  # Experiment decision criterion (ADR-0008)
-  # At 2 posts/day a 7-day window gives n≈14 per group — hard p-value
-  # thresholds never fired. Bootstrap P(variant > control) is used instead.
-  experiment_window_days: 14
-  promote_probability: 0.95   # promote when P(variant > control) >= this
-  min_effect_pct: 5           # ...and relative effect is at least this
+  # Risk-tiered experiment thresholds (issue #42): low-risk experiments
+  # (auto-rollback) get a lower promote bar; high-risk (approval gate)
+  # get a longer window and the strict bar.
+  experiment_tiers:
+    low_risk:
+      experiment_types: [rubric_weight, cta, source_score, visual]
+      promote_probability: 0.90
+      min_effect_pct: 5
+      experiment_window_days: 14
+    high_risk:
+      experiment_types: [post_param, regex_gate]
+      promote_probability: 0.95
+      min_effect_pct: 5
+      experiment_window_days: 28
 
   # Anomaly detection thresholds
   engagement_drop_24h_pct: 30   # freeze if >30% drop in 24h
