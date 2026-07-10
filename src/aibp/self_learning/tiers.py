@@ -47,10 +47,11 @@ def load_tier_config(experiment_type: str, policy: dict | None = None) -> dict:
         for tier_name in ("low_risk", "high_risk"):
             tier = tiers.get(tier_name, {})
             if experiment_type in tier.get("experiment_types", []):
+                defaults = DEFAULT_TIERS[tier_name]
                 return {
-                    "promote_probability": tier.get("promote_probability", DEFAULT_TIERS[tier_name]["promote_probability"]),
-                    "min_effect_pct": tier.get("min_effect_pct", DEFAULT_TIERS[tier_name]["min_effect_pct"]),
-                    "experiment_window_days": tier.get("experiment_window_days", DEFAULT_TIERS[tier_name]["experiment_window_days"]),
+                    "promote_probability": tier.get("promote_probability", defaults["promote_probability"]),
+                    "min_effect_pct": tier.get("min_effect_pct", defaults["min_effect_pct"]),
+                    "experiment_window_days": tier.get("experiment_window_days", defaults["experiment_window_days"]),
                 }
         # Known tiers structure but type not listed → high_risk (conservative)
         high = tiers.get("high_risk", DEFAULT_TIERS["high_risk"])
