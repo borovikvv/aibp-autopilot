@@ -73,6 +73,11 @@ weekly_case:
   enabled: true
   weekday: 2   # 0=Mon; Wednesday's morning post becomes the weekly case
 
+# ─── Competitor dedup (issue #40) ──────────────────────────────────
+competitor_dedup:
+  dup_threshold: 0.85    # cosine similarity >= this → duplicate (skip)
+  grey_threshold: 0.70   # <= this → unique; in between → LLM resolves
+
 # ─── 3. Regex Gates (auto-populated by self-learning) ─────────────
 # Each entry: {name, pattern, slot, action}
 # action: warn | fail
