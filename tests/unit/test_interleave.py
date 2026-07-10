@@ -223,6 +223,7 @@ def test_interleaving_with_strong_effect_promotes():
     _simulate_interleaved_posts(fake, effect_pct=30)
     experiment = {
         "id": 1, "started_at": (datetime.now(UTC) - timedelta(days=8)).isoformat(),
+        "experiment_type": "rubric_weight",
         "policy_before": "v_control", "policy_after": "v_variant",
     }
 
@@ -241,6 +242,7 @@ def test_interleaving_with_no_effect_rejects():
     _simulate_interleaved_posts(fake, effect_pct=0)
     experiment = {
         "id": 1, "started_at": (datetime.now(UTC) - timedelta(days=8)).isoformat(),
+        "experiment_type": "rubric_weight",
         "policy_before": "v_control", "policy_after": "v_variant",
     }
 
