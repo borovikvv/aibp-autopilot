@@ -15,7 +15,8 @@ from datetime import UTC, datetime
 import structlog
 import yaml
 
-from aibp.self_learning.db import save_policy_version, sqlite_conn
+from aibp.db.connection import execute_returning
+from aibp.self_learning.db import save_policy_version
 from aibp.self_learning.safety import is_autopilot_paused
 from aibp.utils.config import PROJECT_ROOT, load_policy
 
@@ -157,23 +158,23 @@ def create_experiment(hypothesis: dict, current_policy: dict) -> int | None:
     )
 
     # Create experiment record
-    with sqlite_conn() as conn:
-        cur = conn.execute(
-            """
-            INSERT INTO experiments_log
-                (started_at, experiment_type, hypothesis, policy_before, policy_after,
-                 applies_to, status, assignment_mode)
-            VALUES (?, ?, ?, ?, ?, 'stage', 'draft', 'interleave')
-            """,
-            (
-                datetime.now(UTC).isoformat(),
-                hypothesis["experiment_type"],
-                hypothesis.get("hypothesis", ""),
-                current_policy.get("version", "unknown"),
-                new_version,
-            ),
-        )
-        exp_id = cur.lastrowid
+    row = execute_returning(
+        """
+        INSERT INTO experiments_log
+            (started_at, experiment_type, hypothesis, policy_before, policy_after,
+             applies_to, status, assignment_mode)
+        VALUES (%s, %s, %s, %s, %s, 'stage', 'draft', 'interleave')
+        RETURNING id
+        """,
+        (
+            datetime.now(UTC),
+            hypothesis["experiment_type"],
+            hypothesis.get("hypothesis", ""),
+            current_policy.get("version", "unknown"),
+            new_version,
+        ),
+    )
+    exp_id = row["id"] if row else None
 
     log.info("experiment_created", id=exp_id, type=hypothesis["experiment_type"], new_policy=new_version)
     return exp_id

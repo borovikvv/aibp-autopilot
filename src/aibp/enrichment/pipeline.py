@@ -33,7 +33,7 @@ Return JSON with this exact schema:
   "publish_worthy": true | false,
   "strategy_rubric": "process_under_ai" | "pilot_without_chaos" | "implementation_metric" | "ai_regulation" | "tool_through_scenario" | "anti_hype" | null,
   "topic_cluster": "sales_revenue" | "support_service" | "documents_backoffice" | "operations_management" | "marketing_content_ops" | "hr_training" | "risk_data_governance" | "ai_tools" | null,
-  "recommended_format": "morning" | "evening" | "weekly_digest" | null,
+  "recommended_format": "morning" | "evening" | "weekly_digest" | "weekly_case" | null,
   "source_fit_score": 1-5 (5 = perfect fit, 1 = irrelevant),
   "importance_hint": "A" | "B" | "C",
   "rank_score": 0-100 (editorial priority),
@@ -44,6 +44,7 @@ Return JSON with this exact schema:
 Rules:
 - "publish_worthy" = false if the item is: pure product release without process angle, generic "AI is important" claim, ad-like tool mention, technical curiosity without business angle.
 - "source_fit_score" >= 4 means the source supports a strong editorial post.
+- "recommended_format": "weekly_case" when the item is a real implementation case (cases/regulation/research) with concrete before/after figures — a source that supports a deep "process → tool → metric → limit" breakdown.
 - "one_sentence_angle" must be in Russian and reflect the practical/business angle, not the news itself.
 - Return ONLY the JSON, no other text.
 """

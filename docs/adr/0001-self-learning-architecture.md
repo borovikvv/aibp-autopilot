@@ -11,7 +11,7 @@ The previous project (ai-business-pulse-hermes) had a "self-learning" module tha
 
 Implement a 5-stage closed loop:
 
-1. **Engagement Collector** (every 4h) — fetches views/forwards from TG Bot API, stores in SQLite
+1. **Engagement Collector** (every 4h) — fetches views/forwards from TG Bot API, stores in PostgreSQL
 2. **Pattern Miner** (weekly) — statistical analysis (scipy) + LLM hypothesis generation (OpenRouter)
 3. **Policy Updater** (weekly) — converts hypotheses into policy variants, saves as experiments
 4. **Shadow Test Runner** (daily) — applies policy variant to stage/test channel, runs for 7 days
@@ -45,3 +45,9 @@ Implement a 5-stage closed loop:
 - Mitigation: safety rails + rollback + kill switch
 - Benefit: true autonomous optimization without human intervention
 - Benefit: every change is tracked in `experiments_log` for audit
+
+## Update (issue #43, 2026-07-08)
+
+The self-learning SQLite store has been consolidated into PostgreSQL (migration
+0009). Stage 1 (Engagement Collector) now writes to the same PG instance as the
+content pipeline. The "separate SQLite" decision is superseded.

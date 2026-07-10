@@ -21,12 +21,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import UTC
+from datetime import UTC, datetime
 
 import httpx
 import structlog
 
-from aibp.self_learning.db import log_autopilot_event, sqlite_conn
+from aibp.db.connection import execute, fetch_all, fetch_one
+from aibp.self_learning.db import log_autopilot_event
 from aibp.self_learning.telegram_lock import getupdates_lock
 from aibp.utils.config import get_settings
 
@@ -112,19 +113,21 @@ def send_approval_request(experiment: dict, decision: dict) -> bool:
 # ═══════════════════════════════════════════════════════════════════
 
 def _load_pending_experiment(experiment_id: int) -> dict | None:
-    with sqlite_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM experiments_log WHERE id = ? AND status = 'pending_approval'",
-            (experiment_id,),
-        ).fetchone()
-        return dict(row) if row else None
+    return fetch_one(
+        "SELECT * FROM experiments_log WHERE id = %s AND status = 'pending_approval'",
+        (experiment_id,),
+    )
 
 
 def _stored_decision(experiment: dict) -> dict:
-    """Rebuild the decision dict from columns stored at pending time."""
+    """Rebuild the decision dict from columns stored at pending time.
+
+    control_engagement / shadow_engagement are jsonb columns, so psycopg2
+    returns them as dicts already.
+    """
     return {
-        "control_engagement": json.loads(experiment.get("control_engagement") or "{}"),
-        "shadow_engagement": json.loads(experiment.get("shadow_engagement") or "{}"),
+        "control_engagement": experiment.get("control_engagement") or {},
+        "shadow_engagement": experiment.get("shadow_engagement") or {},
         "effect_size": experiment.get("effect_size"),
         "p_value": experiment.get("p_value"),
         "reason": (experiment.get("decision_reason") or "") + " [approved by human]",
@@ -154,17 +157,15 @@ def handle_callback(callback_data: str) -> str:
         log.error("approval_apply_failed", experiment=experiment_id)
         return "ignored"
 
-    from datetime import datetime
-    with sqlite_conn() as conn:
-        conn.execute(
-            """
-            UPDATE experiments_log
-            SET status = 'rejected', finished_at = ?,
-                decision_reason = COALESCE(decision_reason, '') || ' [rejected by human]'
-            WHERE id = ?
-            """,
-            (datetime.now(UTC).isoformat(), experiment_id),
-        )
+    execute(
+        """
+        UPDATE experiments_log
+        SET status = 'rejected', finished_at = %s,
+            decision_reason = COALESCE(decision_reason, '') || ' [rejected by human]'
+        WHERE id = %s
+        """,
+        (datetime.now(UTC), experiment_id),
+    )
     log_autopilot_event("approval_rejected", experiment_id=experiment_id)
     return "rejected"
 
@@ -277,13 +278,11 @@ async def process_callbacks_async() -> int:
 
 def resend_pending_requests() -> int:
     """Re-send approval messages for all pending experiments (--remind)."""
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM experiments_log WHERE status = 'pending_approval'"
-        ).fetchall()
+    rows = fetch_all(
+        "SELECT * FROM experiments_log WHERE status = 'pending_approval'"
+    )
     sent = 0
-    for row in rows:
-        experiment = dict(row)
+    for experiment in rows:
         if send_approval_request(experiment, _stored_decision(experiment)):
             sent += 1
     return sent

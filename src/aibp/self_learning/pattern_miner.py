@@ -10,8 +10,9 @@ from datetime import UTC, datetime, timedelta
 import structlog
 from scipy import stats as scipy_stats
 
+from aibp.db.connection import fetch_all
 from aibp.enrichment.llm_client import OpenRouterClient
-from aibp.self_learning.db import get_snapshot_at_horizon, sqlite_conn
+from aibp.self_learning.db import get_snapshot_at_horizon
 from aibp.utils.config import PROJECT_ROOT, load_policy
 
 log = structlog.get_logger()
@@ -26,21 +27,20 @@ def load_post_data(days: int = 7) -> list[dict]:
     The horizon snapshot (not the last one) removes time-decay bias: views
     grow ~72h after publishing, so the last snapshot favors older posts.
     """
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT pf.feed_item_id, pf.posted_at, pf.slot, pf.target_channel,
-                   pf.strategy_rubric, pf.topic_cluster, pf.source_domain,
-                   pf.char_count, pf.paragraph_count, pf.bold_count, pf.emoji_count,
-                   pf.has_image, pf.scheduled_hour, pf.cta_variant, pf.policy_version
-            FROM post_features pf
-            WHERE pf.posted_at >= ?
-              AND pf.target_channel = 'main'
-            ORDER BY pf.posted_at DESC
-            """,
-            ((datetime.now(UTC) - timedelta(days=days)).isoformat(),),
-        ).fetchall()
-        posts = [dict(r) for r in rows]
+    since = datetime.now(UTC) - timedelta(days=days)
+    posts = fetch_all(
+        """
+        SELECT pf.feed_item_id, pf.posted_at, pf.slot, pf.target_channel,
+               pf.strategy_rubric, pf.topic_cluster, pf.source_domain,
+               pf.char_count, pf.paragraph_count, pf.bold_count, pf.emoji_count,
+               pf.has_image, pf.scheduled_hour, pf.cta_variant, pf.policy_version
+        FROM post_features pf
+        WHERE pf.posted_at >= %s
+          AND pf.target_channel = 'main'
+        ORDER BY pf.posted_at DESC
+        """,
+        (since,),
+    )
 
     for post in posts:
         snapshot = get_snapshot_at_horizon(post["feed_item_id"])

@@ -4,14 +4,14 @@ Daily cron: checks promoted experiments, rolls back if engagement drops.
 """
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 
 import structlog
 import yaml
 
+from aibp.db.connection import execute, fetch_all, fetch_one
 from aibp.publishing.publisher import send_message
-from aibp.self_learning.db import log_autopilot_event, sqlite_conn
+from aibp.self_learning.db import log_autopilot_event
 from aibp.self_learning.safety import pause_autopilot
 from aibp.utils.config import PROJECT_ROOT, get_settings, load_policy
 
@@ -21,33 +21,31 @@ POLICY_PATH = PROJECT_ROOT / "config" / "policy.yaml"
 
 def get_promoted_experiments_in_window(hours: int) -> list[dict]:
     """Get experiments promoted within the last N hours."""
-    since = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, finished_at, policy_before, policy_after, experiment_type
-            FROM experiments_log
-            WHERE status = 'promoted' AND finished_at >= ?
-            """,
-            (since,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+    since = datetime.now(UTC) - timedelta(hours=hours)
+    return fetch_all(
+        """
+        SELECT id, finished_at, policy_before, policy_after, experiment_type
+        FROM experiments_log
+        WHERE status = 'promoted' AND finished_at >= %s
+        """,
+        (since,),
+    )
 
 
 def get_avg_engagement_for_policy(policy_version: str, days: int) -> float | None:
     """Get average engagement rate for posts with this policy version."""
-    with sqlite_conn() as conn:
-        row = conn.execute(
-            """
-            SELECT AVG(CAST(em.views AS FLOAT) / NULLIF(em.subscribers_at, 0)) as avg_rate
-            FROM post_features pf
-            JOIN engagement_metrics em ON em.feed_item_id = pf.feed_item_id
-            WHERE pf.policy_version = ?
-              AND em.measured_at >= ?
-            """,
-            (policy_version, (datetime.now(UTC) - timedelta(days=days)).isoformat()),
-        ).fetchone()
-        return row["avg_rate"] if row and row["avg_rate"] is not None else None
+    since = datetime.now(UTC) - timedelta(days=days)
+    row = fetch_one(
+        """
+        SELECT AVG(CAST(em.views AS FLOAT) / NULLIF(em.subscribers_at, 0)) as avg_rate
+        FROM post_features pf
+        JOIN engagement_metrics em ON em.feed_item_id = pf.feed_item_id
+        WHERE pf.policy_version = %s
+          AND em.measured_at >= %s
+        """,
+        (policy_version, since),
+    )
+    return row["avg_rate"] if row and row["avg_rate"] is not None else None
 
 
 async def send_alert(message: str) -> None:
@@ -64,34 +62,32 @@ async def send_alert(message: str) -> None:
 
 def rollback_experiment(experiment: dict, reason: str) -> None:
     """Revert policy to previous version."""
-    # Load previous policy
-    with sqlite_conn() as conn:
-        row = conn.execute(
-            "SELECT json_blob, yaml_content FROM policies WHERE version = ?",
-            (experiment["policy_before"],),
-        ).fetchone()
-        if not row:
-            log.error("cannot_rollback_policy_not_found", version=experiment["policy_before"])
-            return
+    # Load previous policy (json_blob is jsonb → already a dict)
+    row = fetch_one(
+        "SELECT json_blob, yaml_content FROM policies WHERE version = %s",
+        (experiment["policy_before"],),
+    )
+    if not row:
+        log.error("cannot_rollback_policy_not_found", version=experiment["policy_before"])
+        return
 
-    prev_policy = json.loads(row["json_blob"])
+    prev_policy = row["json_blob"]
 
     # Write previous policy to production
     with open(POLICY_PATH, "w", encoding="utf-8") as f:
         yaml.dump(prev_policy, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
     # Update experiment
-    with sqlite_conn() as conn:
-        conn.execute(
-            """
-            UPDATE experiments_log
-            SET status = 'rolled_back',
-                rolled_back_at = ?,
-                rollback_reason = ?
-            WHERE id = ?
-            """,
-            (datetime.now(UTC).isoformat(), reason, experiment["id"]),
-        )
+    execute(
+        """
+        UPDATE experiments_log
+        SET status = 'rolled_back',
+            rolled_back_at = %s,
+            rollback_reason = %s
+        WHERE id = %s
+        """,
+        (datetime.now(UTC), reason, experiment["id"]),
+    )
 
     log_autopilot_event("rollback", experiment_id=experiment["id"], details={"reason": reason})
     log.warning("experiment_rolled_back", id=experiment["id"], reason=reason)

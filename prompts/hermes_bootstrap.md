@@ -141,6 +141,21 @@ cronjob(
     enabled_toolsets=['terminal'],
 )
 
+# Weekly Case Generation — 09:00 MSK (06:00 UTC), same time as morning (issue #40).
+# Runs daily alongside Morning Generation. On the configured weekly_case weekday
+# (policy.weekly_case.weekday) _should_skip_for_weekly_case makes Morning skip
+# and weekly_case fire instead; on every other day weekly_case skips and morning
+# runs as usual — so exactly one of the two produces a post each day.
+cronjob(
+    action='create',
+    name='AIBP — Weekly Case Generation',
+    schedule='0 6 * * *',
+    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot weekly_case 2>&1',
+    workdir='/root/aibp-autopilot',
+    deliver='origin',
+    enabled_toolsets=['terminal'],
+)
+
 # Evening Generation — 17:00 MSK (14:00 UTC)
 cronjob(
     action='create',

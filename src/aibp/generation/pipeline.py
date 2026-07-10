@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -109,6 +109,8 @@ Do NOT add a hashtag yourself — one is appended automatically.
 Evening = boundary note. One limit, mistake, or distinction. Short and sharp.
 {% elif slot == "weekly_digest" %}
 Weekly digest = synthesis of 4-5 sources around one weekly signal.
+{% elif slot == "weekly_case" %}
+Weekly case = a deep "case study" breakdown of ONE implementation: process → tool → before/after numbers → stop condition. Not a recap.
 {% endif %}
 
 {% if previous_failures %}
@@ -125,18 +127,124 @@ Return ONLY the post HTML. No explanation, no markdown fences.
 """)
 
 
+WEEKLY_CASE_PROMPT = Template("""You are the editor of @AI_Business_Pulse.
+
+Write ONE Russian Telegram post — a weekly "case study" breakdown for the weekly_case slot.
+
+## Source material
+TITLE: {{ title }}
+SOURCE: {{ source }} ({{ source_domain }})
+URL: {{ url }}
+EXCERPT: {{ text_excerpt }}
+
+## Format — "разбор одного внедрения с ROI"
+The post must follow this structure:
+1. <b>Заголовок</b> — one-line case summary.
+2. <b>Процесс.</b> What work task changed and how (the before-state).
+3. <b>Инструмент.</b> Which AI tool/approach was used and why.
+4. <b>Метрика.</b> Before/after numbers — time, cost, quality, count. At least one concrete number is REQUIRED.
+5. <b>Граница.</b> Where this stops working / stop condition / limitation.
+End with: <a href="{{ url }}">Источник</a>
+
+## Rules
+- Russian language, HTML format.
+- One source, one deep breakdown — NOT a news recap.
+- At least one numeric measurement (%, time, cost, count) in the body.
+- No forbidden terms: SMB, CEO, "для бизнеса".
+- No AI clichés. No generic moral endings.
+- Length: {{ target_chars_min }}-{{ target_chars_max }} chars, {{ paragraphs_min }}-{{ paragraphs_max }} paragraphs.
+- Max bold: {{ max_bold }}.
+
+Return ONLY the post HTML. No explanation, no markdown fences.
+""")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Weekly case day mechanics (issue #40)
+# ═══════════════════════════════════════════════════════════════════
+
+def _should_skip_for_weekly_case(slot: str, policy: dict, today: date | None = None) -> bool:
+    """True when this slot should NOT run today due to the weekly_case schedule.
+
+    Single source of truth for the weekly_case day logic:
+    - On the case weekday (today.weekday() == weekly_case.weekday): the morning
+      slot is replaced by weekly_case — morning skips, weekly_case fires.
+    - On any other day: weekly_case does not run.
+    - Slots other than morning/weekly_case are never affected.
+
+    When `today` is None it defaults to the current MSK date.
+    """
+    if today is None:
+        today = datetime.now(MSK).date()
+    wc = policy.get("weekly_case") or {}
+    if not wc.get("enabled", False):
+        return False
+    is_case_day = today.weekday() == wc.get("weekday", 2)
+    if slot == "morning" and is_case_day:
+        return True
+    if slot == "weekly_case" and not is_case_day:
+        return True
+    return False
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Candidate selection
 # ═══════════════════════════════════════════════════════════════════
 
-def select_candidate(slot: str, policy: dict, pipeline_env: str = "prod") -> dict | None:
+def select_candidate(
+    slot: str,
+    policy: dict,
+    pipeline_env: str = "prod",
+    exclude_ids: set[int] | None = None,
+) -> dict | None:
     """Select one best candidate for the slot.
 
     For prod: pick from enriched, unused sources.
     For stage: pick from already-published prod sources (to compare same source
                with different policy), excluding those already re-published to stage.
+
+    For weekly_case (issue #40): prefer candidates whose editorial category is
+    'cases', 'regulation' or 'research' with source_fit_score >= 4 — a deep
+    implementation breakdown needs a source that supports one.
+
+    exclude_ids: candidate IDs to ignore (dedup loop, Task 3.7). Applied to all
+                 slots before returning.
     """
     rubric_weights = policy.get("rubric_weights", {})
+    exclude_ids = exclude_ids or set()
+
+    # ── weekly_case: prefer cases/regulation/research with high source_fit ──
+    if slot == "weekly_case" and pipeline_env != "stage":
+        case_candidates = fetch_all(
+            """
+            SELECT id, url, title, text, source, source_domain, source_lang,
+                   source_published_at, summary, rank_score, relevance
+            FROM feed_items
+            WHERE status = 'enriched'
+              AND COALESCE(is_used, false) = false
+              AND posted_at IS NULL
+              AND post_draft IS NULL
+              AND source_published_at > now() - interval '14 days'
+              AND summary->'editorial'->>'publish_worthy' = 'true'
+              AND category IN ('cases', 'regulation', 'research')
+            ORDER BY rank_score DESC NULLS LAST
+            LIMIT 20
+            """
+        )
+        if exclude_ids:
+            case_candidates = [c for c in case_candidates if c["id"] not in exclude_ids]
+        if not case_candidates:
+            log.info("no_candidates", slot=slot, pipeline_env=pipeline_env)
+            return None
+        # Prefer source_fit_score >= 4; fall back to the whole case pool.
+        slot_filtered = [
+            c for c in case_candidates
+            if (parse_summary(c.get("summary")).get("editorial", {}).get("source_fit_score", 0) or 0) >= 4
+        ]
+        if not slot_filtered:
+            slot_filtered = case_candidates
+        slot_filtered.sort(key=lambda c: float(c.get("rank_score", 50)), reverse=True)
+        return slot_filtered[0]
 
     if pipeline_env == "stage":
         # Stage: select sources already published to prod, not yet re-published to stage.
@@ -215,6 +323,8 @@ def select_candidate(slot: str, policy: dict, pipeline_env: str = "prod") -> dic
         return base * weight
 
     slot_filtered.sort(key=weighted_score, reverse=True)
+    if exclude_ids:
+        slot_filtered = [c for c in slot_filtered if c["id"] not in exclude_ids]
     return slot_filtered[0] if slot_filtered else None
 
 
@@ -253,34 +363,50 @@ def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterCl
     editorial = summary.get("editorial", {})
 
     post_params = policy.get("post_params", {}).get(slot, {})
-    policy_block = POLICY_BLOCK_TEMPLATE.render(
-        rubric_weights=policy.get("rubric_weights", {}),
-        post_params=policy.get("post_params", {}),
-        slot=slot,
-        regex_gates=policy.get("regex_gates", []),
-        source_scores=policy.get("source_scores", {}),
-    )
 
-    prompt = GENERATION_PROMPT.render(
-        slot=slot,
-        title=candidate.get("title", ""),
-        source=candidate.get("source", ""),
-        source_domain=candidate.get("source_domain", ""),
-        url=candidate.get("url", ""),
-        published_at=candidate.get("source_published_at", ""),
-        text_excerpt=(candidate.get("text") or "")[:2000],
-        strategy_rubric=editorial.get("strategy_rubric"),
-        topic_cluster=editorial.get("topic_cluster"),
-        source_fit_score=editorial.get("source_fit_score"),
-        one_sentence_angle=editorial.get("one_sentence_angle"),
-        policy_block=policy_block,
-        target_chars_min=post_params.get("target_chars", [800, 1400])[0],
-        target_chars_max=post_params.get("target_chars", [800, 1400])[1],
-        paragraphs_min=post_params.get("paragraphs", [4, 5])[0],
-        paragraphs_max=post_params.get("paragraphs", [4, 5])[1],
-        max_bold=post_params.get("max_bold", 1),
-        previous_failures=previous_failures or [],
-    )
+    if slot == "weekly_case":
+        # Issue #40: deep "case study" breakdown uses its own dedicated template.
+        prompt = WEEKLY_CASE_PROMPT.render(
+            title=candidate.get("title", ""),
+            source=candidate.get("source", ""),
+            source_domain=candidate.get("source_domain", ""),
+            url=candidate.get("url", ""),
+            text_excerpt=(candidate.get("text") or "")[:2000],
+            target_chars_min=post_params.get("target_chars", [1200, 1800])[0],
+            target_chars_max=post_params.get("target_chars", [1200, 1800])[1],
+            paragraphs_min=post_params.get("paragraphs", [4, 6])[0],
+            paragraphs_max=post_params.get("paragraphs", [4, 6])[1],
+            max_bold=post_params.get("max_bold", 4),
+        )
+    else:
+        policy_block = POLICY_BLOCK_TEMPLATE.render(
+            rubric_weights=policy.get("rubric_weights", {}),
+            post_params=policy.get("post_params", {}),
+            slot=slot,
+            regex_gates=policy.get("regex_gates", []),
+            source_scores=policy.get("source_scores", {}),
+        )
+
+        prompt = GENERATION_PROMPT.render(
+            slot=slot,
+            title=candidate.get("title", ""),
+            source=candidate.get("source", ""),
+            source_domain=candidate.get("source_domain", ""),
+            url=candidate.get("url", ""),
+            published_at=candidate.get("source_published_at", ""),
+            text_excerpt=(candidate.get("text") or "")[:2000],
+            strategy_rubric=editorial.get("strategy_rubric"),
+            topic_cluster=editorial.get("topic_cluster"),
+            source_fit_score=editorial.get("source_fit_score"),
+            one_sentence_angle=editorial.get("one_sentence_angle"),
+            policy_block=policy_block,
+            target_chars_min=post_params.get("target_chars", [800, 1400])[0],
+            target_chars_max=post_params.get("target_chars", [800, 1400])[1],
+            paragraphs_min=post_params.get("paragraphs", [4, 5])[0],
+            paragraphs_max=post_params.get("paragraphs", [4, 5])[1],
+            max_bold=post_params.get("max_bold", 1),
+            previous_failures=previous_failures or [],
+        )
 
     # Nudge temperature up on retries to escape a stuck formulation.
     temperature = min(0.4 + 0.15 * attempt, 0.7)
@@ -483,7 +609,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     """Generate one post for the slot.
 
     Args:
-        slot: morning | evening | weekly_digest
+        slot: morning | evening | weekly_digest | weekly_case
         pipeline_env: prod → publish to main channel with config/policy.yaml
                       stage → publish to test channel with config/policy.stage.yaml
     """
@@ -493,9 +619,48 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         # in the main channel; on variant days the shadow policy is used.
         from aibp.self_learning.interleave import resolve_policy_for_today
         policy = resolve_policy_for_today(policy)
+
+    # Weekly case day mechanics (issue #40): on the configured weekday the
+    # morning slot is replaced by weekly_case; on other days weekly_case does
+    # not run. Exactly one of them fires.
+    if _should_skip_for_weekly_case(slot, policy):
+        log.info("slot_skipped_weekly_case", slot=slot)
+        return 0
+
     client = OpenRouterClient()
 
-    candidate = select_candidate(slot, policy, pipeline_env=pipeline_env)
+    # Competitor dedup (issue #40): skip candidates already covered by competitors.
+    # Prod only — stage re-publishes existing prod sources for shadow comparison,
+    # and skipping a stage post would lose a paired data point for the experiment.
+    # Up to 3 attempts — each duplicate hit is added to exclude_ids so the next
+    # pick skips it. Degrades to 'unique' (no block) on any infra failure, so a
+    # downed embeddings service never blocks publishing.
+    exclude_ids: set[int] = set()
+    candidate = None
+    if pipeline_env == "prod":
+        for _dedup_attempt in range(3):
+            candidate = select_candidate(slot, policy, pipeline_env=pipeline_env, exclude_ids=exclude_ids or None)
+            if candidate is None:
+                break
+            dedup_result = "unique"
+            try:
+                from aibp.self_learning.competitor_dedup import check_duplicate
+                dedup_result = check_duplicate(
+                    candidate.get("title", ""),
+                    candidate.get("text", ""),
+                    policy,
+                )
+            except Exception as e:
+                log.warning("competitor_dedup_failed", error=str(e))
+            if dedup_result != "duplicate":
+                break
+            log.info("candidate_skipped_competitor_dup", candidate_id=candidate["id"])
+            exclude_ids.add(candidate["id"])
+        else:
+            candidate = None
+    else:
+        candidate = select_candidate(slot, policy, pipeline_env=pipeline_env)
+
     if candidate is None:
         log.info("no_candidate_available", slot=slot, pipeline_env=pipeline_env)
         return 0

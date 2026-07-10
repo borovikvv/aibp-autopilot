@@ -27,7 +27,7 @@ engagement rate между каналами отражает разницу ау
 2. **Interleaving по дням в основном канале.** Активный эксперимент чередует
    политики по чётности дня (day-of-year, MSK): чётные дни — control
    (`policy_before`, текущий `config/policy.yaml`), нечётные дни — variant
-   (`policy_after` из SQLite `policies`). Одна аудитория → сравнение
+   (`policy_after` из таблицы `policies` в PostgreSQL). Одна аудитория → сравнение
    статистически корректно. Назначение детерминировано датой, поэтому не
    требует дополнительного состояния и переживает рестарты.
 
@@ -48,7 +48,7 @@ engagement rate между каналами отражает разницу ау
 
 | | **Preview policy** | **Interleave variant** |
 |---|---|---|
-| Файл/источник | `config/policy.stage.yaml` (генерируемый) | SQLite `policies`, версия `policy_after` |
+| Файл/источник | `config/policy.stage.yaml` (генерируемый) | PostgreSQL `policies`, версия `policy_after` |
 | Пишет | `shadow_runner.apply_policy_to_stage()` | `policy_updater.create_experiment()` |
 | Читает | `generation/pipeline` при `pipeline_env='stage'` | `self_learning/interleave.resolve_policy_for_today()` |
 | Канал | `test` (превью) | `main` (прод, нечётные дни) |
@@ -56,7 +56,7 @@ engagement rate между каналами отражает разницу ау
 | Влияет на решения | ❌ нет | ✅ да |
 
 Правило: `policy.stage.yaml` — это **preview для человека**, а не вариант
-эксперимента. Статистику определяет только interleave-variant из SQLite.
+эксперимента. Статистику определяет только interleave-variant из PostgreSQL.
 
 Про rename: переименование значения `pipeline_env='stage' → 'preview'` (как
 предлагалось в issue #22) сознательно **не** сделано — это значение

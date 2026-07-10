@@ -22,7 +22,6 @@ make update
 | Файл/директория | Что там | Почему не в git |
 |---|---|---|
 | `.env` | TELEGRAM_BOT_TOKEN, OPENROUTER_API_KEY, DATABASE_URL | Сервероспецифичные секреты |
-| `data/self_learning.db` | SQLite с экспериментами | Runtime данные |
 | `reports/` | Логи, дашборды, JSON-отчёты | Runtime артефакты |
 | `backups/` | Бэкапы БД | Server-specific |
 

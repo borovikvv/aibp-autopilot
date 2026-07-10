@@ -28,10 +28,10 @@ from datetime import datetime, timedelta
 
 import structlog
 
+from aibp.db.connection import fetch_all
 from aibp.self_learning.db import (
     ENGAGEMENT_HORIZON_HOURS,
     get_snapshot_at_horizon,
-    sqlite_conn,
 )
 from aibp.utils.config import load_policy
 
@@ -57,6 +57,13 @@ def get_reward_config(policy: dict | None = None) -> tuple[dict[str, float], int
     weights = {**DEFAULT_REWARD_WEIGHTS, **(safety.get("reward_weights") or {})}
     hours = safety.get("subs_attribution_hours", DEFAULT_SUBS_ATTRIBUTION_HOURS)
     return weights, hours
+
+
+def _as_dt(value) -> datetime:
+    """Coerce a DB timestamp (datetime) or ISO string (tests) to datetime."""
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(value)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -86,7 +93,7 @@ def fetch_clicks_at_horizon(
         return {}
 
     horizon = timedelta(hours=horizon_hours)
-    posted = {item_id: datetime.fromisoformat(ts) for item_id, ts in items}
+    posted = {item_id: _as_dt(ts) for item_id, ts in items}
     clicks: dict[int, int] = {}
     for r in rows:
         posted_at = posted.get(r["feed_item_id"])
@@ -107,17 +114,16 @@ def fetch_clicks_at_horizon(
 
 def load_subscriber_series() -> list[tuple[datetime, int]]:
     """Global (measured_at, subscribers) series for the main channel, ascending."""
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT em.measured_at, em.subscribers_at
-            FROM engagement_metrics em
-            JOIN post_features pf ON pf.feed_item_id = em.feed_item_id
-            WHERE pf.target_channel = 'main' AND em.subscribers_at IS NOT NULL
-            ORDER BY em.measured_at ASC
-            """
-        ).fetchall()
-    return [(datetime.fromisoformat(r["measured_at"]), r["subscribers_at"]) for r in rows]
+    rows = fetch_all(
+        """
+        SELECT em.measured_at, em.subscribers_at
+        FROM engagement_metrics em
+        JOIN post_features pf ON pf.feed_item_id = em.feed_item_id
+        WHERE pf.target_channel = 'main' AND em.subscribers_at IS NOT NULL
+        ORDER BY em.measured_at ASC
+        """
+    )
+    return [(_as_dt(r["measured_at"]), r["subscribers_at"]) for r in rows]
 
 
 def subs_at(series: list[tuple[datetime, int]], t: datetime) -> float | None:
@@ -207,20 +213,19 @@ def compute_rewards_for_posts(posts: list[dict], policy: dict | None = None) -> 
 
     # Next-post boundaries come from ALL main posts, not only the scored
     # subset — an interleaved control post still clips a variant's window.
-    with sqlite_conn() as conn:
-        all_posted = [
-            datetime.fromisoformat(r["posted_at"])
-            for r in conn.execute(
-                "SELECT posted_at FROM post_features WHERE target_channel = 'main' ORDER BY posted_at"
-            )
-        ]
+    all_posted = [
+        _as_dt(r["posted_at"])
+        for r in fetch_all(
+            "SELECT posted_at FROM post_features WHERE target_channel = 'main' ORDER BY posted_at"
+        )
+    ]
 
     scored = []
     for post in posts:
         snapshot = get_snapshot_at_horizon(post["feed_item_id"])
         if snapshot is None:
             continue
-        posted_at = datetime.fromisoformat(post["posted_at"])
+        posted_at = _as_dt(post["posted_at"])
         next_post_at = next((t for t in all_posted if t > posted_at), None)
         subs_delta = compute_subs_delta(posted_at, series, attribution_hours, next_post_at)
         result = compute_post_reward(

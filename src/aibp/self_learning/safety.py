@@ -10,7 +10,8 @@ from datetime import UTC, datetime, timedelta
 import structlog
 import yaml
 
-from aibp.self_learning.db import log_autopilot_event, sqlite_conn
+from aibp.db.connection import fetch_one
+from aibp.self_learning.db import log_autopilot_event
 from aibp.utils.config import PROJECT_ROOT, load_policy
 
 log = structlog.get_logger()
@@ -81,12 +82,11 @@ def requires_approval(experiment_type: str) -> bool:
 
 def count_events(event_type: str, since: datetime) -> int:
     """Count autopilot events of type in time window."""
-    with sqlite_conn() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) as n FROM autopilot_events WHERE event_type = ? AND event_at >= ?",
-            (event_type, since.isoformat()),
-        ).fetchone()
-        return row["n"] if row else 0
+    row = fetch_one(
+        "SELECT COUNT(*) as n FROM autopilot_events WHERE event_type = %s AND event_at >= %s",
+        (event_type, since),
+    )
+    return row["n"] if row else 0
 
 
 def check_rate_limit(action_type: str = "change_applied") -> tuple[bool, str]:
@@ -121,20 +121,19 @@ def check_rate_limit(action_type: str = "change_applied") -> tuple[bool, str]:
 
 def get_recent_engagement_stats(days: int = 7) -> dict:
     """Get avg engagement for recent posts."""
-    with sqlite_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT AVG(em.views) as avg_views,
-                   AVG(em.subscribers_at) as avg_subs,
-                   COUNT(DISTINCT em.feed_item_id) as n_posts
-            FROM engagement_metrics em
-            JOIN post_features pf ON em.feed_item_id = pf.feed_item_id
-            WHERE em.measured_at >= ?
-              AND pf.target_channel = 'main'
-            """,
-            ((datetime.now(UTC) - timedelta(days=days)).isoformat(),),
-        ).fetchone()
-        return dict(rows) if rows else {}
+    since = datetime.now(UTC) - timedelta(days=days)
+    return fetch_one(
+        """
+        SELECT AVG(em.views) as avg_views,
+               AVG(em.subscribers_at) as avg_subs,
+               COUNT(DISTINCT em.feed_item_id) as n_posts
+        FROM engagement_metrics em
+        JOIN post_features pf ON em.feed_item_id = pf.feed_item_id
+        WHERE em.measured_at >= %s
+          AND pf.target_channel = 'main'
+        """,
+        (since,),
+    ) or {}
 
 
 def check_anomaly() -> tuple[bool, str | None]:

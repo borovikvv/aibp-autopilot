@@ -30,6 +30,7 @@ class Settings:
     openrouter_model: str
     openrouter_miner_model: str
     openrouter_daily_budget_usd: float
+    openrouter_embedding_model: str
 
     # Image gen (issue #34) — via OpenRouter /api/v1/images
     xai_api_key: str
@@ -46,7 +47,6 @@ class Settings:
     app_timezone: str
     log_level: str
     policy_path: Path
-    self_learning_db_path: Path
     rss_feeds_path: Path
 
     # Dashboard
@@ -70,6 +70,7 @@ class Settings:
             openrouter_model=os.getenv("OPENROUTER_MODEL", "anthropic/claude-sonnet-4"),
             openrouter_miner_model=os.getenv("OPENROUTER_MINER_MODEL", "anthropic/claude-sonnet-4"),
             openrouter_daily_budget_usd=float(os.getenv("OPENROUTER_DAILY_BUDGET_USD", "5.0")),
+            openrouter_embedding_model=os.getenv("OPENROUTER_EMBEDDING_MODEL", "openai/text-embedding-3-small"),
             xai_api_key=os.getenv("XAI_API_KEY", ""),
             openrouter_image_model=os.getenv("OPENROUTER_IMAGE_MODEL", "google/gemini-2.5-flash-image"),
             openrouter_image_cost_usd=float(os.getenv("OPENROUTER_IMAGE_COST_USD", "0.04")),
@@ -81,7 +82,6 @@ class Settings:
             app_timezone=os.getenv("APP_TIMEZONE", "Europe/Moscow"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             policy_path=Path(os.getenv("POLICY_PATH", "config/policy.yaml")),
-            self_learning_db_path=Path(os.getenv("SELF_LEARNING_DB_PATH", "data/self_learning.db")),
             rss_feeds_path=Path(os.getenv("RSS_FEEDS_PATH", "config/rss_feeds.yaml")),
             dashboard_output_path=Path(os.getenv("DASHBOARD_OUTPUT_PATH", "/srv/static/aibp/dashboard.html")),
             dashboard_base_url=os.getenv("DASHBOARD_BASE_URL", "https://cockpit.borovikvv.ru/aibp"),
