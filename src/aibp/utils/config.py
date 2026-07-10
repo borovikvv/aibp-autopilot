@@ -30,6 +30,7 @@ class Settings:
     openrouter_model: str
     openrouter_miner_model: str
     openrouter_daily_budget_usd: float
+    openrouter_embedding_model: str
 
     # Image gen (issue #34) — via OpenRouter /api/v1/images
     xai_api_key: str
@@ -69,6 +70,7 @@ class Settings:
             openrouter_model=os.getenv("OPENROUTER_MODEL", "anthropic/claude-sonnet-4"),
             openrouter_miner_model=os.getenv("OPENROUTER_MINER_MODEL", "anthropic/claude-sonnet-4"),
             openrouter_daily_budget_usd=float(os.getenv("OPENROUTER_DAILY_BUDGET_USD", "5.0")),
+            openrouter_embedding_model=os.getenv("OPENROUTER_EMBEDDING_MODEL", "openai/text-embedding-3-small"),
             xai_api_key=os.getenv("XAI_API_KEY", ""),
             openrouter_image_model=os.getenv("OPENROUTER_IMAGE_MODEL", "google/gemini-2.5-flash-image"),
             openrouter_image_cost_usd=float(os.getenv("OPENROUTER_IMAGE_COST_USD", "0.04")),

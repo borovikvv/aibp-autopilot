@@ -227,3 +227,35 @@ class OpenRouterClient:
         except json.JSONDecodeError as e:
             log.error("llm_json_parse_failed", error=str(e), text_preview=text[:200])
             raise LLMError(f"Failed to parse JSON: {e}") from e
+
+    def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
+        """Get embeddings via OpenRouter /api/v1/embeddings (issue #40).
+
+        OpenAI-compatible endpoint. Returns one embedding vector per input text.
+        Cost is logged against the daily budget.
+        """
+        self._check_budget()
+        s = get_settings()
+        model = model or getattr(s, "openrouter_embedding_model", "openai/text-embedding-3-small")
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        payload = {"model": model, "input": texts}
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(
+                    "https://openrouter.ai/api/v1/embeddings",
+                    json=payload, headers=headers,
+                )
+                resp.raise_for_status()
+                result = resp.json()
+        except Exception as e:
+            log.error("embed_failed", model=model, error=str(e))
+            raise LLMError(f"Embedding call failed: {e}") from e
+
+        usage = result.get("usage", {})
+        # Embeddings are cheap; log a nominal cost if usage.cost is absent.
+        cost = float(usage.get("cost") or 0.0)
+        self._log_cost(model, usage.get("prompt_tokens", 0), 0, cost)
+
+        embeddings = [d["embedding"] for d in result.get("data", [])]
+        log.info("embed_ok", model=model, n=len(embeddings), cost_usd=round(cost, 5))
+        return embeddings
