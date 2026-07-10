@@ -35,9 +35,14 @@ paused, monetization off; prove each layer on real data before trusting it.
 ```bash
 sudo apt-get update && sudo apt-get install -y \
     python3 python3-venv python3-pip git postgresql postgresql-contrib \
-    build-essential libpq-dev curl
+    build-essential libpq-dev curl postgresql-16-pgvector
 sudo timedatectl set-timezone Europe/Moscow   # cron times in install.md are MSK-derived
 ```
+
+`postgresql-16-pgvector` provides the `vector` extension type required by
+migration 0010 (`competitor_posts` table — dedup-by-embeddings, issue #40). Match
+the package version to your PostgreSQL major (16 on the default Debian/Ubuntu
+image); if you install a different PG major, swap the package number.
 
 Create a dedicated user + checkout (the systemd unit and cron examples assume
 `/root/aibp-autopilot`; adjust paths consistently if you use a non-root user).
@@ -73,8 +78,20 @@ In `config/policy.yaml`, confirm the safe starting posture:
 
 ```bash
 make db-init          # create schema
-make migrate          # apply migrations 0001..0006
+make migrate          # apply migrations 0001..0010
 make migrate-status   # verify all applied
+```
+
+Note: migration 0010 creates the pgvector `vector` extension and the
+`competitor_posts` table (dedup-by-embeddings, issue #40). `CREATE EXTENSION`
+needs superuser — `make bootstrap` / `scripts/setup_postgres.sh` creates it as
+the `postgres` user during setup, so by the time `make migrate` runs here it is
+already available (the migration's `CREATE EXTENSION IF NOT EXISTS` is a no-op).
+If `make migrate` fails on `CREATE EXTENSION vector` for a permission reason,
+run it once as superuser:
+
+```bash
+sudo -u postgres psql -d aibp -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ```
 
 ---

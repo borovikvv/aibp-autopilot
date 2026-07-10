@@ -171,7 +171,10 @@ else
         info "Installing PostgreSQL via apt..."
         export DEBIAN_FRONTEND=noninteractive
         sudo apt-get update -qq
-        sudo apt-get install -y -qq postgresql postgresql-contrib
+        # postgresql-16-pgvector enables the `vector` type (migration 0010 /
+        # competitor_posts dedup-by-embeddings, issue #40). Match the PG major
+        # version: the default on Debian/Ubuntu here is 16.
+        sudo apt-get install -y -qq postgresql postgresql-contrib postgresql-16-pgvector
         log "PostgreSQL installed"
 
         # Start service
@@ -217,6 +220,17 @@ else
     # Grant privileges
     sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;" >/dev/null
     log "Privileges granted"
+
+    # Create the pgvector extension as superuser (migration 0010 also runs
+    # CREATE EXTENSION IF NOT EXISTS, but that requires superuser privileges —
+    # creating it here means the `aibp` user can rely on it). Needed for the
+    # competitor_posts dedup-by-embeddings table (issue #40).
+    if sudo -u postgres psql -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
+        log "pgvector extension ready in '$DB_NAME'"
+    else
+        warn "Could not create pgvector extension — install postgresql-16-pgvector"
+        warn "(migration 0010 will retry; needs superuser)"
+    fi
 
     # Allow password auth (modify pg_hba.conf if needed)
     PG_HBA=$(sudo -u postgres psql -tAc "SHOW hba_file")
