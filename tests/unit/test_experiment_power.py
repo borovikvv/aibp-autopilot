@@ -62,7 +62,7 @@ class _PatchCtx:
         s.enter_context(patch.object(dashboard, "fetch_all", return_value=self._experiments))
         s.enter_context(patch.object(
             dashboard, "_count_posts_for_version",
-            side_effect=lambda v: self._before_n if v == "v1" else self._after_n,
+            side_effect=lambda v, **kw: self._before_n if v == "v1" else self._after_n,
         ))
         s.enter_context(patch.object(dashboard, "load_policy", return_value={"safety": {}}))
         s.enter_context(patch.object(dashboard, "datetime", _FakeDateTime))

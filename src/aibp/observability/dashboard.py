@@ -397,12 +397,25 @@ def get_active_experiments() -> list[dict]:
     )
 
 
-def _count_posts_for_version(policy_version: str) -> int:
-    """Count main-channel posts published with this policy version."""
-    row = fetch_one(
-        "SELECT COUNT(*) AS n FROM post_features WHERE policy_version = %s AND target_channel = 'main'",
-        (policy_version,),
-    )
+def _count_posts_for_version(policy_version: str, since=None) -> int:
+    """Count main-channel posts published with this policy version.
+
+    When `since` (a datetime) is given, only posts from that point on are
+    counted — the control policy is the standing prod policy, so without a
+    cutoff its n would include pre-experiment posts and inflate control_n.
+    """
+    if since is not None:
+        row = fetch_one(
+            "SELECT COUNT(*) AS n FROM post_features "
+            "WHERE policy_version = %s AND target_channel = 'main' AND posted_at >= %s",
+            (policy_version, since),
+        )
+    else:
+        row = fetch_one(
+            "SELECT COUNT(*) AS n FROM post_features "
+            "WHERE policy_version = %s AND target_channel = 'main'",
+            (policy_version,),
+        )
     return (row or {}).get("n", 0)
 
 
@@ -442,8 +455,8 @@ def get_experiment_power() -> list[dict]:
         target_n = window * 2  # ~2 posts/day
         days_to_decision = max(0, window - exp_age_days)
 
-        control_n = _count_posts_for_version(exp["policy_before"])
-        shadow_n = _count_posts_for_version(exp["policy_after"])
+        control_n = _count_posts_for_version(exp["policy_before"], since=started)
+        shadow_n = _count_posts_for_version(exp["policy_after"], since=started)
 
         current_p = None
         if control_n >= 5 and shadow_n >= 5:
