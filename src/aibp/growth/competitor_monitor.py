@@ -21,7 +21,7 @@ import httpx
 import structlog
 import yaml
 
-from aibp.db.connection import fetch_all, fetch_one
+from aibp.db.connection import execute, fetch_all, fetch_one
 from aibp.self_learning.db import log_autopilot_event
 from aibp.utils.config import PROJECT_ROOT, get_settings
 
@@ -338,6 +338,42 @@ def run() -> int:
         else:
             if recommendations:
                 log_autopilot_event("tgstat_ok", details={"channels": len(recommendations)})
+
+    # Scrape competitor posts for dedup (issue #40) — best-effort, never breaks
+    # the report. For each channel: fetch recent posts from the t.me/s/ preview,
+    # skip ones already stored (channel, message_id), embed new texts in batch,
+    # and insert. Stored embeddings power the generation-time dedup check.
+    try:
+        from aibp.enrichment.llm_client import OpenRouterClient
+        from aibp.growth.competitor_scraper import fetch_channel_posts
+
+        client = OpenRouterClient()
+        for ch in channels[:5]:
+            username = ch["username"] if isinstance(ch, dict) else str(ch)
+            posts = fetch_channel_posts(username)
+            new_posts = [
+                p for p in posts
+                if not fetch_one(
+                    "SELECT 1 FROM competitor_posts WHERE channel = %s AND message_id = %s",
+                    (username, p["message_id"]),
+                )
+            ]
+            if not new_posts:
+                continue
+            texts = [p["text"] for p in new_posts]
+            embeddings = client.embed(texts)
+            for post, emb in zip(new_posts, embeddings, strict=False):
+                execute(
+                    """
+                    INSERT INTO competitor_posts (channel, message_id, posted_at, text_excerpt, embedding)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (channel, message_id) DO NOTHING
+                    """,
+                    (username, post["message_id"], post.get("posted_at"), post["text"], str(emb)),
+                )
+            log.info("competitor_posts_stored", channel=username, count=len(new_posts))
+    except Exception as e:
+        log.warning("competitor_scrape_failed", error=str(e))
 
     from aibp.growth.traffic_sources import cps_summary
     report = build_report(deltas, anomaly, recommendations, our_er, tgstat_status,

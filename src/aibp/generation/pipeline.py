@@ -629,7 +629,33 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
 
     client = OpenRouterClient()
 
-    candidate = select_candidate(slot, policy, pipeline_env=pipeline_env, exclude_ids=None)
+    # Competitor dedup (issue #40): skip candidates already covered by competitors.
+    # Up to 3 attempts — each duplicate hit is added to exclude_ids so the next
+    # pick skips it. Degrades to 'unique' (no block) on any infra failure, so a
+    # downed embeddings service never blocks publishing.
+    exclude_ids: set[int] = set()
+    candidate = None
+    for _dedup_attempt in range(3):
+        candidate = select_candidate(slot, policy, pipeline_env=pipeline_env, exclude_ids=exclude_ids or None)
+        if candidate is None:
+            break
+        dedup_result = "unique"
+        try:
+            from aibp.self_learning.competitor_dedup import check_duplicate
+            dedup_result = check_duplicate(
+                candidate.get("title", ""),
+                candidate.get("text", ""),
+                policy,
+            )
+        except Exception as e:
+            log.warning("competitor_dedup_failed", error=str(e))
+        if dedup_result != "duplicate":
+            break
+        log.info("candidate_skipped_competitor_dup", candidate_id=candidate["id"])
+        exclude_ids.add(candidate["id"])
+    else:
+        candidate = None
+
     if candidate is None:
         log.info("no_candidate_available", slot=slot, pipeline_env=pipeline_env)
         return 0
