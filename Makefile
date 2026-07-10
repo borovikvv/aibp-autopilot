@@ -2,6 +2,7 @@
 # Common commands for development and operations
 
 .PHONY: install db-init db-check smoke-test test test-integration lint typecheck
+.PHONY: check-feeds
 .PHONY: collect-rss enrich generate-morning generate-evening publish
 .PHONY: collect-engagement mine-patterns update-policy run-shadow decide rollback-check safety-check dashboard
 .PHONY: hermes-register docker-build docker-up docker-down
@@ -87,6 +88,10 @@ lint-fix:
 
 typecheck:
         $(PYTHON) -m mypy src/aibp/
+
+# ─── Feed validation (issue #40) ───────────────────────────────────
+check-feeds:
+        $(PYTHON) scripts/check_feeds.py
 
 # Pre-commit hooks (run `pip install pre-commit && pre-commit install` once)
 pre-commit-install:
