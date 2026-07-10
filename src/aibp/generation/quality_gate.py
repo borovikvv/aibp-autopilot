@@ -255,6 +255,26 @@ def validate_post(
             "pass" if has_metric else "warn",
             note=None if has_metric else "no numeric/measurable marker in body",
         )
+    elif slot == "weekly_case":
+        # Issue #40: deep case-study breakdown. Same structural checks as the
+        # morning post (paragraph range + no generic moral), plus a soft gate
+        # that the post carries at least one before/after number — the whole
+        # point of a case study. Warn-only, never blocks.
+        structure_issues = []
+        if paragraph_count < 4 or paragraph_count > 6:
+            structure_issues.append(f"target_paragraphs=4-6, got {paragraph_count}")
+        body_paragraphs = paragraphs[1:] if paragraphs and paragraphs[0].startswith("<b>") else paragraphs
+        if body_paragraphs and GENERIC_FINAL_MORAL_RE.search(body_paragraphs[-1]):
+            structure_issues.append("generic_final_moral")
+        verdicts["weekly_case_structure"] = _verdict(
+            "warn" if structure_issues else "pass",
+            note="; ".join([length_note] + structure_issues),
+        )
+        has_metric = bool(METRIC_PRESENCE_RE.search(body_plain))
+        verdicts["case_metrics_presence"] = _verdict(
+            "pass" if has_metric else "warn",
+            note=None if has_metric else "weekly_case requires at least one numeric measurement",
+        )
     elif slot == "weekly_digest":
         bullet_lines = re.findall(r"(?m)^\s*[•-]\s+(.+)$", post)
         if len(bullet_lines) < 4:
