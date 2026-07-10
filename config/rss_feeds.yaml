@@ -4,7 +4,7 @@
 # Format:
 #   - name: human-readable name
 #     url: RSS feed URL
-#     category: news | blog | research | company
+#     category: news | blog | research | company | cases | regulation
 #     weight: 1.0 (default), can be adjusted per-feed
 #     lang: en | ru
 
@@ -41,54 +41,81 @@ feeds:
     weight: 1.2
     lang: en
 
-  - name: Anthropic Blog
-    url: https://www.anthropic.com/news/rss.xml
-    category: company
-    weight: 1.2
-    lang: en
-
   - name: Google AI Blog
     url: https://blog.research.google/feeds/posts/default?alt=rss
     category: company
     weight: 1.0
     lang: en
 
-  - name: Meta AI Blog
-    url: https://ai.meta.com/blog/rss/
-    category: company
-    weight: 0.9
-    lang: en
-
-  - name: Microsoft AI Blog
-    url: https://blogs.microsoft.com/ai/feed/
-    category: company
-    weight: 1.0
-    lang: en
+  # NOTE: Anthropic, Meta AI, and Microsoft AI blog feeds were removed in
+  # task 3.2 — their RSS endpoints returned 404/410 and no working
+  # alternative could be verified. See .superpowers/sdd/task-3.2-report.md.
 
   # ─── Research ─────────────────────────────────────────────────
   - name: Hugging Face Blog
     url: https://huggingface.co/blog/feed.xml
-    category: blog
+    category: research
     weight: 1.0
     lang: en
 
   - name: Sebastian Raschka Blog
     url: https://sebastianraschka.com/rss_feed.xml
-    category: blog
+    category: research
+    weight: 0.9
+    lang: en
+
+  - name: arXiv cs.AI
+    url: https://rss.arxiv.org/rss/cs.AI
+    category: research
+    weight: 1.0
+    lang: en
+
+  - name: Stanford CRFM
+    url: https://crfm.stanford.edu/feed.xml
+    category: research
+    weight: 1.0
+    lang: en
+
+  - name: LessWrong
+    url: https://www.lesswrong.com/feed.xml
+    category: research
+    weight: 0.8
+    lang: en
+
+  # ─── Cases / implementation ───────────────────────────────────
+  - name: MIT Sloan Management Review
+    url: https://sloanreview.mit.edu/feed/
+    category: cases
+    weight: 1.1
+    lang: en
+
+  # ─── Regulation ───────────────────────────────────────────────
+  - name: GDPRhub Recent Changes
+    url: https://gdprhub.eu/index.php?title=Special:RecentChanges&feed=rss
+    category: regulation
+    weight: 0.9
+    lang: en
+
+  - name: EFF Updates
+    url: https://www.eff.org/rss/updates.xml
+    category: regulation
     weight: 0.9
     lang: en
 
   # ─── Russian sources ──────────────────────────────────────────
-  - name: Habr AI
-    url: https://habr.com/ru/hub/ai/rss/
+  # NOTE: Habr AI and TAdviser were removed in task 3.2 — Habr's hub RSS
+  # endpoints all returned 404 (no working variant found), and the TAdviser
+  # URL was a non-feed page that failed to parse. See task-3.2-report.md.
+  - name: VC.ru
+    url: https://vc.ru/rss/all
     category: news
-    weight: 0.8
+    weight: 1.0
     lang: ru
 
-  - name: TAdviser AI
-    url: https://www.tadviser.ru/index.php/Файл:RSS-каналы_TAdviser
+  - name: Forklog
+    url: https://forklog.com/feed/
     category: news
-    weight: 0.6
+    weight: 0.9
     lang: ru
 
 # ─── Collection settings ─────────────────────────────────────────
