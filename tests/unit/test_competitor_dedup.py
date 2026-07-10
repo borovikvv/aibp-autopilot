@@ -20,7 +20,13 @@ def test_classify_grey():
     assert classify_similarity(0.78, POLICY) == "grey"
 
 def test_check_duplicate_degrades_to_unique_on_error():
-    """When the embedding API / pgvector is unavailable, return 'unique' (no block)."""
-    with patch("aibp.self_learning.competitor_dedup._query_similarity", side_effect=Exception("pgvector unavailable")):
+    """When pgvector is unavailable, return 'unique' (no block).
+
+    We must mock the embed path too: ``embed()`` runs first inside its own
+    try/except, so without a mocked embedding the query-failure path is never
+    reached — the test would pass for the wrong reason (embed fails first)."""
+    fake_embedding = [[0.1] * 1536]
+    with patch("aibp.enrichment.llm_client.OpenRouterClient.embed", return_value=fake_embedding), \
+         patch("aibp.self_learning.competitor_dedup._query_similarity", side_effect=Exception("pgvector unavailable")):
         result = check_duplicate("Some title", "Some text", POLICY)
     assert result == "unique"

@@ -705,7 +705,15 @@ def get_reward_stats(days: int = 14) -> list[dict]:
 
 
 def get_recent_events(limit: int = 20) -> list[dict]:
-    return fetch_all(
+    """Recent autopilot_events rows for the dashboard.
+
+    ``autopilot_events.details`` is jsonb, so psycopg2 returns it as a Python
+    dict; the template slices it with ``[:80]``, which would raise
+    ``TypeError: unhashable type: 'slice'``. Serialize the dict to a JSON
+    string here so the template's slice keeps working."""
+    import json
+
+    rows = fetch_all(
         """
         SELECT event_at, event_type, details
         FROM autopilot_events
@@ -714,6 +722,13 @@ def get_recent_events(limit: int = 20) -> list[dict]:
         """,
         (limit,),
     )
+    result = []
+    for r in rows:
+        r = dict(r)
+        if r.get("details") is not None and not isinstance(r["details"], str):
+            r["details"] = json.dumps(r["details"], ensure_ascii=False)
+        result.append(r)
+    return result
 
 
 def run() -> int:
