@@ -72,7 +72,7 @@ def smoke_test() -> None:
 
 
 @cli.command()
-@click.option("--slot", default="morning", type=click.Choice(["morning", "evening", "weekly_digest"]))
+@click.option("--slot", default="morning", type=click.Choice(["morning", "evening", "weekly_digest", "weekly_case"]))
 @click.option(
     "--env",
     "pipeline_env",

@@ -43,6 +43,12 @@ post_params:
     max_bold: 2
     max_emoji: 0
     scheduled_hour_msk: 19
+  weekly_case:
+    target_chars: [1200, 1800]
+    paragraphs: [4, 6]
+    max_bold: 4
+    max_emoji: 0
+    scheduled_hour_msk: 10
 
 # ─── CTA Variants (monetization funnel) ─────────────────────────────
 # Applied at generation: one CTA variant is sampled by weight and appended
@@ -59,6 +65,13 @@ telegram:
   # Attach a tracked "Открыть источник →" inline button to prod posts
   # (in addition to the in-text source link). Needs TRACKING_BASE_URL.
   source_button: false
+
+# ─── Weekly case slot (issue #40) ──────────────────────────────────
+# One weekday/week the morning slot is replaced by a deep "case study"
+# breakdown (process → tool → before/after numbers → stop condition).
+weekly_case:
+  enabled: true
+  weekday: 2   # 0=Mon; Wednesday's morning post becomes the weekly case
 
 # ─── 3. Regex Gates (auto-populated by self-learning) ─────────────
 # Each entry: {name, pattern, slot, action}
