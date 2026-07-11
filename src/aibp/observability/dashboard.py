@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from jinja2 import Template
+from jinja2 import Environment
 
 from aibp.db.connection import fetch_all, fetch_one
 from aibp.self_learning.db import get_snapshot_at_horizon
@@ -749,8 +749,11 @@ def run() -> int:
     s = get_settings()
     policy = load_policy()
 
-    template = Template(DASHBOARD_TEMPLATE)
-    template.environment.filters["fmt_ts"] = _fmt_ts
+    # The filter must exist before the template is compiled: Template()
+    # compiles eagerly, and jinja2 <3.1.3 resolves filters at compile time.
+    env = Environment()
+    env.filters["fmt_ts"] = _fmt_ts
+    template = env.from_string(DASHBOARD_TEMPLATE)
     html = template.render(
         policy=policy,
         metrics=get_metrics(),
