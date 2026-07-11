@@ -285,9 +285,31 @@ def select_candidate(
         if not candidates:
             # Cold start: no prod-published sources yet (fresh install / prod not
             # cut over). Fall back to fresh enriched items so the test channel
-            # can run standalone before the prod pipeline exists.
+            # can run standalone before the prod pipeline exists. Items already
+            # turned into a stage post are excluded — the shadow flow never marks
+            # its fresh sources is_used, so without this every slot would keep
+            # picking the same top-ranked item (and silently no-op on dupe_key).
             log.info("stage_fallback_fresh_candidates", slot=slot)
-            candidates = fetch_all(fresh_candidates_sql)
+            candidates = fetch_all(
+                """
+                SELECT id, url, title, text, source, source_domain, source_lang,
+                       source_published_at, summary, rank_score, relevance
+                FROM feed_items
+                WHERE status = 'enriched'
+                  AND COALESCE(is_used, false) = false
+                  AND posted_at IS NULL
+                  AND post_draft IS NULL
+                  AND source_published_at > now() - interval '14 days'
+                  AND summary->'editorial'->>'publish_worthy' = 'true'
+                  AND id NOT IN (
+                      SELECT source_item_id FROM feed_items
+                      WHERE source_item_id IS NOT NULL
+                        AND pipeline_env = 'stage'
+                  )
+                ORDER BY rank_score DESC NULLS LAST, source_published_at DESC
+                LIMIT 20
+                """
+            )
     else:
         # Prod: fresh enriched candidates
         candidates = fetch_all(fresh_candidates_sql)
