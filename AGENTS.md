@@ -71,6 +71,8 @@ hermes cron pause <id Publisher>     # остановить публикацию
   (`OPENCODE_API_KEY` + `OPENCODE_BASE_URL=https://opencode.ai/zen/go/v1`,
   Go-план), а без ключа — фолбэк на OpenRouter
   (`OPENROUTER_ENRICHMENT_MODEL`, `OPENROUTER_DEDUP_MODEL`).
+- **Сам Hermes-агент** (то есть ты) работает на `deepseek-v4-flash` через
+  тот же Go-endpoint (`~/.hermes/config.yaml`).
 - Не меняй модели и роутинг сам — это решение владельца (влияет на бюджет).
 
 ## Пути и факты
