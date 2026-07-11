@@ -63,6 +63,16 @@ hermes cron pause <id Publisher>     # остановить публикацию
 Затем разберись по логам и доложи владельцу. Обратно: `hermes cron resume`.
 Откат кода: `git checkout <prev> && make migrate` (у миграций есть down()).
 
+## LLM-роутинг (split, с 2026-07-11)
+
+- **Генерация постов и pattern miner** — флагман `anthropic/claude-sonnet-5`
+  через OpenRouter (`OPENROUTER_MODEL`, `OPENROUTER_MINER_MODEL`).
+- **Enrichment и dedup** — дешёвая `deepseek-v4-flash`: через opencode zen
+  (`OPENCODE_API_KEY` + `OPENCODE_BASE_URL=https://opencode.ai/zen/go/v1`,
+  Go-план), а без ключа — фолбэк на OpenRouter
+  (`OPENROUTER_ENRICHMENT_MODEL`, `OPENROUTER_DEDUP_MODEL`).
+- Не меняй модели и роутинг сам — это решение владельца (влияет на бюджет).
+
 ## Пути и факты
 
 - Проект: `/root/aibp-autopilot` (Python системный, venv нет; PG 16: БД
