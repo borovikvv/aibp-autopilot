@@ -11,7 +11,7 @@
 # Versioned by sha256 hash. Stored in SQLite policies table.
 
 version: "v1_initial"
-autopilot_paused: false
+autopilot_paused: true
 
 # ─── 1. Strategy Rubric Weights ────────────────────────────────────
 # Applied at candidate selection. Higher = more likely to be picked.
