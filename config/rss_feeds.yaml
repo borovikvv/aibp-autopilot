@@ -136,9 +136,9 @@ feeds:
     lang: en
 
   # ─── Russian sources ──────────────────────────────────────────
-  # NOTE: Habr AI and TAdviser were removed in task 3.2 — Habr's hub RSS
-  # endpoints all returned 404 (no working variant found), and the TAdviser
-  # URL was a non-feed page that failed to parse. See task-3.2-report.md.
+  # Habr feeds work via /ru/rss/hubs/{name}/ (the old /ru/hub/{name}/rss/
+  # path was 404 — fixed path order). CNews covers enterprise AI deployments
+  # in Russian companies; Proglib covers the IT-labor/AI angle.
   - name: VC.ru
     url: https://vc.ru/rss/all
     category: news
@@ -148,7 +148,31 @@ feeds:
   - name: Forklog
     url: https://forklog.com/feed/
     category: news
+    weight: 0.8
+    lang: ru
+
+  - name: Habr — Искусственный интеллект
+    url: https://habr.com/ru/rss/hubs/artificial_intelligence/
+    category: news
+    weight: 1.1
+    lang: ru
+
+  - name: Habr — Машинное обучение
+    url: https://habr.com/ru/rss/hubs/data_mining/
+    category: research
+    weight: 1.0
+    lang: ru
+
+  - name: CNews
+    url: https://www.cnews.ru/inc/rss/news.xml
+    category: news
     weight: 0.9
+    lang: ru
+
+  - name: Proglib
+    url: https://proglib.io/feed
+    category: blog
+    weight: 0.8
     lang: ru
 
 # ─── Collection settings ─────────────────────────────────────────
