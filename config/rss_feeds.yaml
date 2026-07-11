@@ -47,9 +47,26 @@ feeds:
     weight: 1.0
     lang: en
 
-  # NOTE: Anthropic, Meta AI, and Microsoft AI blog feeds were removed in
-  # task 3.2 — their RSS endpoints returned 404/410 and no working
-  # alternative could be verified. See .superpowers/sdd/task-3.2-report.md.
+  # Company coverage restored (issue #44). Anthropic/Meta have no native RSS;
+  # Microsoft's blogs.microsoft.com/ai/feed/ is 410 Gone but news.microsoft.com
+  # still serves a working AI category feed. DeepMind and Mistral are native.
+  - name: Microsoft AI (Source)
+    url: https://news.microsoft.com/source/topics/ai/feed/
+    category: company
+    weight: 1.0
+    lang: en
+
+  - name: Google DeepMind
+    url: https://deepmind.google/blog/rss.xml
+    category: company
+    weight: 1.1
+    lang: en
+
+  - name: Mistral AI
+    url: https://mistral.ai/rss.xml
+    category: company
+    weight: 0.9
+    lang: en
 
   # ─── Research ─────────────────────────────────────────────────
   - name: Hugging Face Blog
@@ -89,17 +106,33 @@ feeds:
     weight: 1.1
     lang: en
 
-  # ─── Regulation ───────────────────────────────────────────────
-  - name: GDPRhub Recent Changes
-    url: https://gdprhub.eu/index.php?title=Special:RecentChanges&feed=rss
-    category: regulation
-    weight: 0.9
+  # Forrester fills the consulting-case-study gap (McKinsey/BCG/Deloitte killed
+  # RSS). Google News aggregator re-surfaces their content + named ROI stories.
+  - name: Forrester Blogs
+    url: https://www.forrester.com/blogs/feed
+    category: cases
+    weight: 1.1
     lang: en
 
-  - name: EFF Updates
-    url: https://www.eff.org/rss/updates.xml
+  - name: Google News — GenAI enterprise ROI
+    url: https://news.google.com/rss/search?q=%22generative+AI%22+enterprise+results+OR+ROI+OR+%22cost+savings%22&hl=en-US&gl=US&ceid=US:en
+    category: cases
+    weight: 0.8
+    lang: en
+
+  # ─── Regulation ───────────────────────────────────────────────
+  # GDPRhub (wiki edits) and EFF (general digital rights) replaced with
+  # AI-regulation-specific feeds (issue #44).
+  - name: EU AI Act
+    url: https://artificialintelligenceact.eu/feed/
     category: regulation
-    weight: 0.9
+    weight: 1.2
+    lang: en
+
+  - name: Tech Policy Press
+    url: https://techpolicy.press/rss/feed.xml
+    category: regulation
+    weight: 1.0
     lang: en
 
   # ─── Russian sources ──────────────────────────────────────────
