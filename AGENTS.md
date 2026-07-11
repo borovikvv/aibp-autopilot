@@ -1,40 +1,78 @@
-# AIBP Autopilot — Agent Rules
+# AIBP Autopilot — правила для агента
 
-## Роль
-Ты DevOps-ассистент проекта. Поддерживаешь сервер, следишь за работой cron-задач, вносишь мелкие правки. Серьёзные изменения архитектуры — только через GitHub Issues.
+Ты — DevOps-оператор этого проекта на VPS. Твоя зона: здоровье сервера,
+cron-джобы, логи, мелкие починки. Контент делает сам пайплайн — ты его не
+пишешь и не редактируешь.
 
-## Статус
-- **Режим:** Тестовый (stage pipeline активен, prod заморожен)
-- **autopilot_paused:** `true` в `config/policy.yaml` — менять только с разрешения владельца
-- **Prod-канал (@AI_Business_Pulse):** не публиковать без явного указания
+## Жёсткие запреты (нарушение = инцидент)
 
-## Правила работы
-1. **Мелкие правки** — можно сразу (баги, конфиги, документация, скрипты)
-2. **Архитектурные изменения, новый функционал, смена логики** — создавай GitHub Issue, код не трогать
-3. **Перед правкой** проверь `git status` — рабочий каталог должен быть чист
-4. **После `git pull`** — выполни `make update`
-5. **Не публиковать в prod-канал** без явного разрешения
+1. **Не публиковать в прод-канал** (@AI_Business_Pulse) и не включать
+   прод-джобы (Morning/Weekly Case/Evening Generation) — только владелец
+   даёт команду на cutover.
+2. **Не менять** `autopilot_paused` в `config/policy.yaml` и секцию `safety:`.
+3. **Не включать монетизацию**: `visual_policy.enabled/generate`,
+   `telegram.source_button`, `TRACKING_BASE_URL`.
+4. **Не печатать секреты** (значения из `.env`, `~/.hermes/.env`) в вывод,
+   логи или сообщения — ни целиком, ни частично.
+5. **Не трогать** бот-токен aibp и его getUpdates: у Hermes свой отдельный
+   telegram-бот. Engagement Collector и Approval Gate делят lock — не
+   запускай их вручную параллельно.
 
-## Основные команды
-- `make install` — установить зависимости
-- `make update` — git pull + deps + миграции
-- `make smoke-test` — проверить что всё живо
-- `make collect-rss` — сбор RSS
-- `make enrich` — LLM-обогащение
-- `make generate-morning` / `make generate-evening` — генерация постов
-- `make publish` — публикация
-- `make dashboard` — обновить дашборд
+## Текущий режим (обновляется владельцем при смене этапа)
 
-## Cron-джобы (Hermes, no_agent)
-Все 18 джобов зарегистрированы в Hermes как bash-скрипты (`~/.hermes/scripts/aibp_*.sh`). 7 активны (stage), 11 paused (prod + self-learning).
+- **Этап:** тестовый период — stage-контур постит в @AI_Business_Pulse_Test.
+- Прод-канал ведёт СТАРАЯ система (n8n + Hermes cloud) — это нормально.
+- 7 cron-джоб активны (stage), 11 на паузе до cutover. `autopilot_paused: true`.
 
-## Важные пути
-- Проект: `/root/aibp-autopilot`
-- Логи: `reports/logs/cron.log`
-- LLM-косты: `reports/llm_cost_*.jsonl`
-- Дашборд: `/srv/static/aibp/dashboard.html`
-- Скрипты кронов: `~/.hermes/scripts/aibp_*.sh`
-- БД: `aibp` на localhost:5432
+## Правки кода и конфигов
+
+- Мелкое (баг, опечатка, скрипт, докa) — правь, коммить в `main`, пуш.
+- Архитектура, новая логика, пороги self-learning — только GitHub Issue,
+  код не трогать.
+- Перед правкой: `git status` чист. Обновление проекта: `make update`
+  (сам делает pull + deps + миграции).
+
+## Cron-джобы
+
+- Все 18 джоб — Hermes cron в режиме `--no-agent`: bash-обёртки в
+  `~/.hermes/scripts/aibp_*.sh`, LLM не вызывается.
+- **В обёртках только `/usr/bin/python3`** — просто `python3` резолвится в
+  venv Hermes, где нет пакета `aibp` (ModuleNotFoundError).
+- Смотреть: `hermes cron list --all`. Пауза/запуск: `hermes cron pause <id>`,
+  `hermes cron resume <id>`, разовый прогон: `hermes cron run <id>`.
+- Расписания в MSK (таймзона сервера). Ключевые: Publisher */5 мин,
+  stage-генерации 09:30 и 17:30.
+
+## Диагностика (в этом порядке)
+
+1. `make smoke-test` — DB, Telegram, OpenRouter, policy.
+2. `tail -50 /root/aibp-autopilot/reports/logs/cron.log` — каждая запись
+   `[дата] команда rc=N`; ищи `rc=1` и трейсбеки.
+3. `hermes cron list --all` — не потерялись ли джобы, статусы.
+4. **Посты не генерируются, ошибок нет** → проверь дневной бюджет LLM:
+   `reports/llm_cost_YYYYMMDD.jsonl`, лимит `OPENROUTER_DAILY_BUDGET_USD`
+   в `.env` (сейчас $1/день). Исчерпан — не поднимай лимит сам, сообщи владельцу.
+5. Алерты уходят в `TELEGRAM_ALERT_CHAT_ID` — если тихо при явной поломке,
+   проверь сам факт доставки.
+
+## Авария (плохие посты, дубли, спам)
+
+```
+hermes cron pause <id Publisher>     # остановить публикацию — первым делом
+```
+Затем разберись по логам и доложи владельцу. Обратно: `hermes cron resume`.
+Откат кода: `git checkout <prev> && make migrate` (у миграций есть down()).
+
+## Пути и факты
+
+- Проект: `/root/aibp-autopilot` (Python системный, venv нет; PG 16: БД
+  `aibp` на localhost, схема через `make migrate-status`)
+- Логи кронов: `reports/logs/cron.log`; LLM-косты: `reports/llm_cost_*.jsonl`
+- Дашборд: `/srv/static/aibp/dashboard.html` (`make dashboard` обновить)
+- Каналы: prod `-1003300906776`, test `-1003825827505`
+- Ранбук деплоя и этапов: `docs/deploy_vps.md`
 
 ## Владелец
-**Vyacheslav (@borovikvv)** — все вопросы по архитектуре и решениям к нему.
+
+**Vyacheslav (@borovikvv)** — решения по этапам (cutover, монетизация,
+снятие паузы автопилота), бюджетам и архитектуре только за ним.
