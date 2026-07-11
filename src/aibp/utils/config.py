@@ -89,7 +89,7 @@ class Settings:
             openrouter_embedding_model=os.getenv("OPENROUTER_EMBEDDING_MODEL", "openai/text-embedding-3-small"),
             openrouter_base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
             opencode_api_key=os.getenv("OPENCODE_API_KEY", ""),
-            opencode_base_url=os.getenv("OPENCODE_BASE_URL", "https://opencode.ai/zen/v1"),
+            opencode_base_url=os.getenv("OPENCODE_BASE_URL", "https://opencode.ai/zen/go/v1"),
             opencode_model=os.getenv("OPENCODE_MODEL", "deepseek-v4-flash"),
             xai_api_key=os.getenv("XAI_API_KEY", ""),
             openrouter_image_model=os.getenv("OPENROUTER_IMAGE_MODEL", "google/gemini-2.5-flash-image"),

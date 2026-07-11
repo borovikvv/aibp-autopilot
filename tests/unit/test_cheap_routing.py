@@ -17,7 +17,7 @@ def _settings(**overrides):
         openrouter_daily_budget_usd=5.0,
         openrouter_base_url="https://openrouter.ai/api/v1",
         opencode_api_key="",
-        opencode_base_url="https://opencode.ai/zen/v1",
+        opencode_base_url="https://opencode.ai/zen/go/v1",
         opencode_model="deepseek-v4-flash",
     )
     base.update(overrides)
@@ -42,7 +42,7 @@ def test_cheap_client_routes_via_opencode_when_key_set(monkeypatch, tmp_path):
 
     client = llm_client.cheap_client("deepseek/deepseek-v4-flash")
     assert client.api_key == "oc-key"
-    assert client.base_url == "https://opencode.ai/zen/v1"
+    assert client.base_url == "https://opencode.ai/zen/go/v1"
     assert client.default_model == "deepseek-v4-flash"
 
 
