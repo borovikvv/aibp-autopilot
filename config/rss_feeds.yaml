@@ -99,6 +99,12 @@ feeds:
     weight: 0.8
     lang: en
 
+  - name: Towards AI
+    url: https://pub.towardsai.net/feed
+    category: research
+    weight: 1.0
+    lang: en
+
   # ─── Cases / implementation ───────────────────────────────────
   - name: MIT Sloan Management Review
     url: https://sloanreview.mit.edu/feed/
