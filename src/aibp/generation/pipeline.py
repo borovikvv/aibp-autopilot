@@ -821,7 +821,11 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
             """,
             (
                 candidate["url"],
-                candidate["url"] and __import__("hashlib").sha256(candidate["url"].encode()).hexdigest(),
+                # url_hash stays NULL: it is the collector's dedup key and the
+                # source row already holds sha256(url) — a stage copy with the
+                # same hash would violate the UNIQUE constraint. Stage dedup is
+                # handled by dupe_key below.
+                None,
                 candidate.get("title"),
                 candidate.get("text"),
                 candidate.get("source"),
