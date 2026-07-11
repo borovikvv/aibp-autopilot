@@ -29,8 +29,22 @@ class Settings:
     openrouter_api_key: str
     openrouter_model: str
     openrouter_miner_model: str
+    # Cheap high-volume tasks: RSS classification and same-story dedup checks.
+    # These run hundreds of times a day, so they get a budget model; the
+    # flagship model is reserved for post generation / mining / creatives.
+    openrouter_enrichment_model: str
+    openrouter_dedup_model: str
     openrouter_daily_budget_usd: float
     openrouter_embedding_model: str
+    # OpenAI-compatible chat/completions gateway for flagship calls.
+    openrouter_base_url: str
+    # Second gateway for cheap high-volume tasks (opencode zen subscription).
+    # When opencode_api_key is set, enrichment/dedup route here with
+    # opencode_model; otherwise they stay on OpenRouter with the
+    # openrouter_*_model settings above.
+    opencode_api_key: str
+    opencode_base_url: str
+    opencode_model: str
 
     # Image gen (issue #34) — via OpenRouter /api/v1/images
     xai_api_key: str
@@ -67,10 +81,16 @@ class Settings:
             telegram_alert_chat_id=os.getenv("TELEGRAM_ALERT_CHAT_ID", ""),
             database_url=os.getenv("DATABASE_URL", "postgresql://aibp:aibp@localhost:5432/aibp"),
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
-            openrouter_model=os.getenv("OPENROUTER_MODEL", "anthropic/claude-sonnet-4"),
-            openrouter_miner_model=os.getenv("OPENROUTER_MINER_MODEL", "anthropic/claude-sonnet-4"),
+            openrouter_model=os.getenv("OPENROUTER_MODEL", "anthropic/claude-sonnet-5"),
+            openrouter_miner_model=os.getenv("OPENROUTER_MINER_MODEL", "anthropic/claude-sonnet-5"),
+            openrouter_enrichment_model=os.getenv("OPENROUTER_ENRICHMENT_MODEL", "deepseek/deepseek-v4-flash"),
+            openrouter_dedup_model=os.getenv("OPENROUTER_DEDUP_MODEL", "deepseek/deepseek-v4-flash"),
             openrouter_daily_budget_usd=float(os.getenv("OPENROUTER_DAILY_BUDGET_USD", "5.0")),
             openrouter_embedding_model=os.getenv("OPENROUTER_EMBEDDING_MODEL", "openai/text-embedding-3-small"),
+            openrouter_base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+            opencode_api_key=os.getenv("OPENCODE_API_KEY", ""),
+            opencode_base_url=os.getenv("OPENCODE_BASE_URL", "https://opencode.ai/zen/go/v1"),
+            opencode_model=os.getenv("OPENCODE_MODEL", "deepseek-v4-flash"),
             xai_api_key=os.getenv("XAI_API_KEY", ""),
             openrouter_image_model=os.getenv("OPENROUTER_IMAGE_MODEL", "google/gemini-2.5-flash-image"),
             openrouter_image_cost_usd=float(os.getenv("OPENROUTER_IMAGE_COST_USD", "0.04")),

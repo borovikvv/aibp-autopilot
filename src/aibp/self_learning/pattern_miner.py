@@ -211,7 +211,14 @@ Return ONLY the JSON array, no other text.
 def run() -> int:
     """Main entry point — weekly pattern mining."""
     policy = load_policy()
-    client = OpenRouterClient(default_model=policy.get("openrouter_miner_model"))
+    # policy.yaml has no openrouter_miner_model key today, so the env-configured
+    # miner model is the effective fallback (previously OPENROUTER_MINER_MODEL
+    # was silently ignored and the global model was used).
+    from aibp.utils.config import get_settings
+    miner_model = policy.get("openrouter_miner_model") or getattr(
+        get_settings(), "openrouter_miner_model", None
+    )
+    client = OpenRouterClient(default_model=miner_model)
 
     posts = load_post_data(days=7)
     if len(posts) < 5:
