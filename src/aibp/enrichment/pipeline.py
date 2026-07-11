@@ -11,7 +11,7 @@ import structlog
 
 from aibp.db.connection import execute, fetch_all
 from aibp.enrichment.llm_client import OpenRouterClient
-from aibp.utils.config import load_policy
+from aibp.utils.config import get_settings, load_policy
 
 log = structlog.get_logger()
 
@@ -85,7 +85,10 @@ def enrich_item(item: dict, client: OpenRouterClient, policy: dict) -> dict | No
 def run() -> int:
     """Main entry point — enrich all 'new' items."""
     policy = load_policy()
-    client = OpenRouterClient()
+    # Classification is high-volume and schema-bound — runs on the cheap model.
+    client = OpenRouterClient(
+        default_model=getattr(get_settings(), "openrouter_enrichment_model", None)
+    )
 
     # Get unenriched items (status='new')
     candidates = fetch_all(

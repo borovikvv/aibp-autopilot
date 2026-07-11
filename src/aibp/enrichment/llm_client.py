@@ -17,16 +17,23 @@ from aibp.utils.config import PROJECT_ROOT, get_settings
 
 log = structlog.get_logger()
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images"
+DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
-# Cost per 1M tokens (USD). Update from https://openrouter.ai/models when needed.
+# Fallback cost per 1M tokens (USD), used only when the API response carries no
+# usage.cost. Update from https://openrouter.ai/models when needed.
+# claude-sonnet-5 lists the durable price ($3/$15); intro pricing through
+# 2026-08-31 is $2/$10, and usage.cost reflects whatever is actually charged.
 COST_TABLE: dict[str, dict[str, float]] = {
+    "anthropic/claude-sonnet-5": {"input": 3.0, "output": 15.0},
     "anthropic/claude-sonnet-4": {"input": 3.0, "output": 15.0},
     "anthropic/claude-opus-4": {"input": 15.0, "output": 75.0},
+    "anthropic/claude-haiku-4.5": {"input": 1.0, "output": 5.0},
+    "deepseek/deepseek-v4-flash": {"input": 0.10, "output": 0.20},
     "openai/gpt-4o": {"input": 2.5, "output": 10.0},
     "openai/gpt-4o-mini": {"input": 0.15, "output": 0.6},
 }
+# Unknown models fall back to this entry (never underestimates vs cheap models).
+_FALLBACK_COST_MODEL = "anthropic/claude-sonnet-5"
 
 
 class BudgetExceededError(Exception):
@@ -40,6 +47,9 @@ class LLMError(Exception):
 class OpenRouterClient:
     """HTTP client for OpenRouter API with retry, cost tracking, budget guard."""
 
+    # Class-level default so partially-constructed clients (tests) still work.
+    base_url = DEFAULT_BASE_URL
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -50,6 +60,7 @@ class OpenRouterClient:
         self.api_key = api_key or s.openrouter_api_key
         self.default_model = default_model or s.openrouter_model
         self.daily_budget = daily_budget_usd or s.openrouter_daily_budget_usd
+        self.base_url = getattr(s, "openrouter_base_url", DEFAULT_BASE_URL).rstrip("/")
         # Daily-rotated cost log: llm_cost_YYYYMMDD.jsonl
         self._cost_log_dir = PROJECT_ROOT / "reports"
         self._cost_log_dir.mkdir(parents=True, exist_ok=True)
@@ -80,13 +91,13 @@ class OpenRouterClient:
             "Content-Type": "application/json",
         }
         with httpx.Client(timeout=timeout) as client:
-            resp = client.post(OPENROUTER_URL, json=payload, headers=headers)
+            resp = client.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
             resp.raise_for_status()
             return resp.json()
 
     def _estimate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
         """Estimate USD cost for a call."""
-        rates = COST_TABLE.get(model, COST_TABLE["anthropic/claude-sonnet-4"])
+        rates = COST_TABLE.get(model, COST_TABLE[_FALLBACK_COST_MODEL])
         return (input_tokens / 1_000_000) * rates["input"] + (output_tokens / 1_000_000) * rates["output"]
 
     def _log_cost(self, model: str, input_tokens: int, output_tokens: int, cost: float) -> None:
@@ -142,6 +153,8 @@ class OpenRouterClient:
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            # Ask OpenRouter to include the actual charged cost in usage.
+            "usage": {"include": True},
         }
 
         try:
@@ -153,7 +166,10 @@ class OpenRouterClient:
         usage = result.get("usage", {})
         input_t = usage.get("prompt_tokens", 0)
         output_t = usage.get("completion_tokens", 0)
-        cost = self._estimate_cost(model, input_t, output_t)
+        # Prefer the provider-reported charge; COST_TABLE is the fallback so the
+        # budget guard doesn't bill cheap models at flagship rates.
+        actual_cost = usage.get("cost")
+        cost = float(actual_cost) if actual_cost is not None else self._estimate_cost(model, input_t, output_t)
         self._log_cost(model, input_t, output_t, cost)
 
         text = result["choices"][0]["message"]["content"]
@@ -173,7 +189,7 @@ class OpenRouterClient:
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         try:
             with httpx.Client(timeout=120.0) as client:
-                resp = client.post(OPENROUTER_IMAGES_URL,
+                resp = client.post(f"{self.base_url}/images",
                                    json={"model": model, "prompt": prompt}, headers=headers)
                 resp.raise_for_status()
                 result = resp.json()
@@ -242,7 +258,7 @@ class OpenRouterClient:
         try:
             with httpx.Client(timeout=30.0) as client:
                 resp = client.post(
-                    "https://openrouter.ai/api/v1/embeddings",
+                    f"{self.base_url}/embeddings",
                     json=payload, headers=headers,
                 )
                 resp.raise_for_status()
