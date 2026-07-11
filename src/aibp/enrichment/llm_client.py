@@ -29,6 +29,9 @@ COST_TABLE: dict[str, dict[str, float]] = {
     "anthropic/claude-opus-4": {"input": 15.0, "output": 75.0},
     "anthropic/claude-haiku-4.5": {"input": 1.0, "output": 5.0},
     "deepseek/deepseek-v4-flash": {"input": 0.10, "output": 0.20},
+    # opencode zen id (no provider prefix). Pay-per-token list price; a zen
+    # subscription charges less or nothing — usage.cost overrides when present.
+    "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
     "openai/gpt-4o": {"input": 2.5, "output": 10.0},
     "openai/gpt-4o-mini": {"input": 0.15, "output": 0.6},
 }
@@ -55,12 +58,13 @@ class OpenRouterClient:
         api_key: str | None = None,
         default_model: str | None = None,
         daily_budget_usd: float | None = None,
+        base_url: str | None = None,
     ) -> None:
         s = get_settings()
         self.api_key = api_key or s.openrouter_api_key
         self.default_model = default_model or s.openrouter_model
         self.daily_budget = daily_budget_usd or s.openrouter_daily_budget_usd
-        self.base_url = getattr(s, "openrouter_base_url", DEFAULT_BASE_URL).rstrip("/")
+        self.base_url = (base_url or getattr(s, "openrouter_base_url", DEFAULT_BASE_URL)).rstrip("/")
         # Daily-rotated cost log: llm_cost_YYYYMMDD.jsonl
         self._cost_log_dir = PROJECT_ROOT / "reports"
         self._cost_log_dir.mkdir(parents=True, exist_ok=True)
@@ -275,3 +279,25 @@ class OpenRouterClient:
         embeddings = [d["embedding"] for d in result.get("data", [])]
         log.info("embed_ok", model=model, n=len(embeddings), cost_usd=round(cost, 5))
         return embeddings
+
+
+def cheap_client(openrouter_model: str | None = None) -> OpenRouterClient:
+    """Client for cheap high-volume tasks (enrichment, dedup).
+
+    Routes to the opencode zen gateway when OPENCODE_API_KEY is set (flat
+    subscription pricing), using OPENCODE_MODEL there. Falls back to the main
+    OpenRouter gateway with `openrouter_model` otherwise, so the split routing
+    is opt-in and removing the opencode key reverts everything.
+
+    Only chat/chat_json go through this client; images and embeddings keep
+    using the default OpenRouter client.
+    """
+    s = get_settings()
+    opencode_key = getattr(s, "opencode_api_key", "")
+    if opencode_key:
+        return OpenRouterClient(
+            api_key=opencode_key,
+            default_model=getattr(s, "opencode_model", None),
+            base_url=getattr(s, "opencode_base_url", None),
+        )
+    return OpenRouterClient(default_model=openrouter_model)

@@ -55,11 +55,9 @@ def _query_similarity(embedding: list[float]) -> tuple[float, str] | None:
 
 def _llm_same_story(text_a: str, text_b: str) -> bool:
     """Cheap LLM check: are these the same news story? (grey-zone resolution)."""
-    from aibp.enrichment.llm_client import OpenRouterClient
+    from aibp.enrichment.llm_client import cheap_client
     from aibp.utils.config import get_settings
-    client = OpenRouterClient(
-        default_model=getattr(get_settings(), "openrouter_dedup_model", None)
-    )
+    client = cheap_client(getattr(get_settings(), "openrouter_dedup_model", None))
     result = client.chat_json(
         messages=[{
             "role": "user",
