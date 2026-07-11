@@ -246,6 +246,20 @@ def select_candidate(
         slot_filtered.sort(key=lambda c: float(c.get("rank_score", 50)), reverse=True)
         return slot_filtered[0]
 
+    fresh_candidates_sql = """
+        SELECT id, url, title, text, source, source_domain, source_lang,
+               source_published_at, summary, rank_score, relevance
+        FROM feed_items
+        WHERE status = 'enriched'
+          AND COALESCE(is_used, false) = false
+          AND posted_at IS NULL
+          AND post_draft IS NULL
+          AND source_published_at > now() - interval '14 days'
+          AND summary->'editorial'->>'publish_worthy' = 'true'
+        ORDER BY rank_score DESC NULLS LAST, source_published_at DESC
+        LIMIT 20
+        """
+
     if pipeline_env == "stage":
         # Stage: select sources already published to prod, not yet re-published to stage.
         # This enables same-source comparison: prod post (prod policy) vs stage post (stage policy).
@@ -268,23 +282,15 @@ def select_candidate(
             LIMIT 20
             """
         )
+        if not candidates:
+            # Cold start: no prod-published sources yet (fresh install / prod not
+            # cut over). Fall back to fresh enriched items so the test channel
+            # can run standalone before the prod pipeline exists.
+            log.info("stage_fallback_fresh_candidates", slot=slot)
+            candidates = fetch_all(fresh_candidates_sql)
     else:
         # Prod: fresh enriched candidates
-        candidates = fetch_all(
-            """
-            SELECT id, url, title, text, source, source_domain, source_lang,
-                   source_published_at, summary, rank_score, relevance
-            FROM feed_items
-            WHERE status = 'enriched'
-              AND COALESCE(is_used, false) = false
-              AND posted_at IS NULL
-              AND post_draft IS NULL
-              AND source_published_at > now() - interval '14 days'
-              AND summary->'editorial'->>'publish_worthy' = 'true'
-            ORDER BY rank_score DESC NULLS LAST, source_published_at DESC
-            LIMIT 20
-            """
-        )
+        candidates = fetch_all(fresh_candidates_sql)
 
     if not candidates:
         log.info("no_candidates", slot=slot, pipeline_env=pipeline_env)
