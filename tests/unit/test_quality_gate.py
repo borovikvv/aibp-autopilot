@@ -194,3 +194,60 @@ def test_opening_source_reference_fails():
     result = validate_post(post, expected_url="https://example.com/article", slot="morning")
     assert result["ok"] is False
     assert "opening" in result["hard_fail_keys"]
+
+
+def test_section_labels_fail_in_morning():
+    """Bold lead-in labels are banned in daily slots — structure must be prose."""
+    post = (
+        "<b>Заголовок про внедрение</b>\n\n"
+        "<b>Процесс.</b> Компания перевела сверку счетов на автоматическую категоризацию.\n\n"
+        "<b>Метрика.</b> Время закрытия месяца сократилось вдвое.\n\n"
+        "<b>Граница.</b> На нестандартных транзакциях модель ошибается.\n\n"
+        "Четвёртый абзац с выводом.\n\n"
+        '<a href="https://example.com/article">Источник</a>'
+    )
+    result = validate_post(post, expected_url="https://example.com/article", slot="morning")
+    assert result["ok"] is False
+    assert "section_labels" in result["hard_fail_keys"]
+    assert len(result["verdicts"]["section_labels"]["hits"]) == 3
+
+
+def test_section_labels_fail_in_evening():
+    post = (
+        "Короткая мысль о границе применимости.\n\n"
+        "<b>Вывод:</b> не каждый процесс стоит автоматизировать.\n\n"
+        '<a href="https://example.com/article">Источник</a>'
+    )
+    result = validate_post(post, expected_url="https://example.com/article", slot="evening")
+    assert result["ok"] is False
+    assert "section_labels" in result["hard_fail_keys"]
+
+
+def test_section_labels_allowed_in_weekly_case():
+    """weekly_case keeps labels deliberately — the branded weekly format."""
+    post = (
+        "<b>Кейс: сверка счетов за часы вместо дней</b>\n\n"
+        "<b>Процесс.</b> Раньше бухгалтер категоризировал транзакции вручную три дня.\n\n"
+        "<b>Инструмент.</b> Автокатегоризация через LLM с ручной досверкой расхождений.\n\n"
+        "<b>Метрика.</b> Закрытие месяца — 4 часа вместо 3 дней на клиента.\n\n"
+        "<b>Граница.</b> Нестандартные транзакции по-прежнему требуют человека.\n\n"
+        '<a href="https://example.com/article">Источник</a>'
+    )
+    result = validate_post(post, expected_url="https://example.com/article", slot="weekly_case")
+    assert "section_labels" not in result["verdicts"]
+    assert result["ok"] is True
+
+
+def test_multiword_bold_headline_is_not_a_label():
+    """A normal multi-word headline must not trip the section-label gate."""
+    post = (
+        "<b>AI-помощник нужно измерять по принятому результату</b>\n\n"
+        "Первый абзац с цифрой: 30 заявок в день.\n\n"
+        "Второй абзац развивает мысль.\n\n"
+        "Третий абзац про границу применимости.\n\n"
+        "Четвёртый абзац.\n\n"
+        '<a href="https://example.com/article">Источник</a>'
+    )
+    result = validate_post(post, expected_url="https://example.com/article", slot="morning")
+    assert result["verdicts"]["section_labels"]["status"] == "pass"
+    assert result["ok"] is True

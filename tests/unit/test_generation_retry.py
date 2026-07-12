@@ -114,3 +114,50 @@ def test_retry_loop_feeds_failure_into_second_prompt(monkeypatch):
     assert "Предыдущая попытка отклонена" not in prompts[0]
     assert "Предыдущая попытка отклонена" in prompts[1]
     assert "владельц" in prompts[1]                    # the failing term is named
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Morning prompt: internal checklist, label ban, hook anti-repetition
+# ═══════════════════════════════════════════════════════════════════
+
+def test_morning_prompt_bans_section_labels_and_keeps_checklist():
+    client = _CaptureClient()
+    pipeline.generate_post(_CANDIDATE, "morning", _MINIMAL_POLICY, client)
+    prompt = client.calls[0]["prompt"]
+    assert "INTERNAL checklist" in prompt
+    assert "FORBIDDEN: bold" in prompt
+    assert "<b>Процесс.</b>" in prompt  # named as a negative example
+    assert "MAY use up to 3 bold lead-in labels" not in prompt
+
+
+def test_recent_openings_injected_into_morning_prompt():
+    client = _CaptureClient()
+    openings = ["Первые недели пилота выглядят успешными", "Бухгалтер за $400 записывает цифры"]
+    pipeline.generate_post(_CANDIDATE, "morning", _MINIMAL_POLICY, client,
+                           recent_openings=openings)
+    prompt = client.calls[0]["prompt"]
+    assert "Первые недели пилота выглядят успешными" in prompt
+    assert "Бухгалтер за $400 записывает цифры" in prompt
+    assert "Do NOT reuse their opening move" in prompt
+
+
+def test_no_recent_openings_no_antirepetition_block():
+    client = _CaptureClient()
+    pipeline.generate_post(_CANDIDATE, "morning", _MINIMAL_POLICY, client)
+    assert "Recent posts opened" not in client.calls[0]["prompt"]
+
+
+def test_extract_opening_skips_headline_and_hashtag():
+    draft = (
+        "<b>Заголовок поста</b>\n\n"
+        "Первое предложение тела, оно и есть зачин.\n\n"
+        "#процесс\n"
+        '<a href="https://example.com/a">Источник</a>'
+    )
+    assert pipeline.extract_opening(draft) == "Первое предложение тела, оно и есть зачин."
+
+
+def test_extract_opening_empty_draft():
+    assert pipeline.extract_opening(None) is None
+    assert pipeline.extract_opening("") is None
+    assert pipeline.extract_opening("<b>Только заголовок</b>") is None

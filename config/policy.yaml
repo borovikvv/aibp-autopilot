@@ -28,7 +28,7 @@ post_params:
   morning:
     target_chars: [800, 1400]
     paragraphs: [4, 5]
-    max_bold: 4          # headline + up to 3 bold lead-in labels (issue #31)
+    max_bold: 1          # headline only — bold section labels are banned in daily slots
     max_emoji: 0
     scheduled_hour_msk: 10
   evening:
@@ -72,6 +72,15 @@ telegram:
 weekly_case:
   enabled: true
   weekday: 2   # 0=Mon; Wednesday's morning post becomes the weekly case
+
+# ─── LLM editor (holistic pre-publish review) ──────────────────────
+# Second LLM pass AFTER the regex gate: reads the post as ONE whole text —
+# single line of reasoning, no template feel, content coverage, hook quality,
+# leaked meta-text, invented numbers. A rejection feeds the informed-retry
+# prompt; infra failures degrade open (regex-validated post still publishes).
+llm_editor:
+  enabled: true
+  model: null   # null → default OpenRouter model; set to pin a specific one
 
 # ─── Competitor dedup (issue #40) ──────────────────────────────────
 competitor_dedup:

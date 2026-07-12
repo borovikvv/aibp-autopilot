@@ -122,8 +122,9 @@ Run the content pipeline manually against the TEST channel and inspect output.
 .venv/bin/python -m aibp.cli dashboard
 ```
 
-Verify on the real TEST channel: formatting, hashtag, morning bold lead-ins,
-evening poll, source link, no double posts, engagement collection works. Expect
+Verify on the real TEST channel: formatting, hashtag, no bold section labels
+in daily posts (weekly_case keeps them), evening poll, source link, no double
+posts, engagement collection works. Expect
 to fix small integration issues here — this is their first live run.
 
 ---
