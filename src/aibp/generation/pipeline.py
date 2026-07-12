@@ -91,19 +91,36 @@ Editorial classification:
 6. No AI clichés: "важно отметить", "в современном мире", "ключевой вывод".
 7. No generic moral endings ("В итоге...", "Итог: ...").
 8. Technical terms (RAG, token budget) allowed only with business translation.
-9. Post must start with a bold headline: `<b>...</b>`, then 3-4 paragraphs. Bold is capped at {{ max_bold }} uses total (headline + optional lead-in labels).
+9. Post must start with a bold headline: `<b>...</b>`, then 3-4 paragraphs. Bold is capped at {{ max_bold }} uses total.
 10. Length: {{ target_chars_min }}-{{ target_chars_max }} chars, {{ paragraphs_min }}-{{ paragraphs_max }} paragraphs.
 11. End with: `<a href="{{ url }}">Источник</a>` (exact format, nofollow not needed).
 
 ## Slot-specific guidance
 
 {% if slot == "morning" %}
-Morning = analytical pillar. Full implementation angle: process, metric, choice, risk.
+Morning = analytical pillar. The post must ANSWER four questions — this is an
+INTERNAL checklist for you, invisible to the reader:
+1. Which work task changes, and how it was done before.
+2. Which tool or approach makes the change possible.
+3. What the measurable effect is (time, money, %, count).
+4. Where the boundary is — when this stops working.
 
-For visual structure you MAY use up to 3 bold lead-in labels inside the body,
-each starting its sentence — e.g. "<b>Процесс.</b> …", "<b>Метрика.</b> …",
-"<b>Граница.</b> …". No bullet symbols, no emoji, no lists — just the bold
-label opening a normal sentence. This is optional; skip it if it doesn't fit.
+Weave the answers into connected prose: one line of reasoning from the first
+sentence to the last, paragraphs flowing into each other. FORBIDDEN: bold
+section labels ("<b>Процесс.</b>", "<b>Метрика.</b>", "<b>Граница.</b>" or any
+similar one-word lead-in). The reader must never see the skeleton. No bullet
+symbols, no emoji, no lists. The only bold element is the headline.
+
+Vary the hook. Pick ONE opening move that fits this material best:
+- a contrast of two numbers or prices;
+- a question the reader has already asked themselves;
+- an unexpected number with a turn ("...and that's not the interesting part");
+- a one-sentence scene from someone's working day.
+{% if recent_openings %}
+Recent posts opened with the lines below. Do NOT reuse their opening move or
+sentence shape:
+{% for opening in recent_openings %}- {{ opening }}
+{% endfor %}{% endif %}
 Do NOT add a hashtag yourself — one is appended automatically.
 {% elif slot == "evening" %}
 Evening = boundary note. One limit, mistake, or distinction. Short and sharp.
@@ -360,6 +377,54 @@ def select_candidate(
 # Post generation
 # ═══════════════════════════════════════════════════════════════════
 
+_OPENING_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def extract_opening(post_draft: str | None, max_chars: int = 120) -> str | None:
+    """First body sentence of a post, plain text — the post's 'opening move'.
+
+    Skips the bold headline line: hook repetition lives in the first body
+    sentence, and headlines are already distinct per source.
+    """
+    if not post_draft:
+        return None
+    lines = [ln.strip() for ln in post_draft.splitlines() if ln.strip()]
+    if lines and lines[0].startswith("<b>"):
+        lines = lines[1:]
+    for line in lines:
+        plain = _OPENING_TAG_RE.sub("", line).strip()
+        if plain and "Источник" not in plain and not plain.startswith("#"):
+            return plain[:max_chars]
+    return None
+
+
+def fetch_recent_openings(limit: int = 5) -> list[str]:
+    """Openings of the last published main-channel posts (anti-repetition).
+
+    Injected into the morning prompt so consecutive posts don't reuse the
+    same hook shape. Degrades to [] on any DB problem — variety guidance is
+    never worth blocking generation.
+    """
+    try:
+        rows = fetch_all(
+            """
+            SELECT post_draft FROM feed_items
+            WHERE status = 'published'
+              AND pipeline_env = 'prod'
+              AND target_channel = 'main'
+              AND post_draft IS NOT NULL
+            ORDER BY posted_at DESC NULLS LAST
+            LIMIT %s
+            """,
+            (limit,),
+        )
+    except Exception as e:
+        log.warning("recent_openings_unavailable", error=str(e))
+        return []
+    openings = [extract_opening(r.get("post_draft")) for r in rows]
+    return [o for o in openings if o]
+
+
 def extract_gate_failures(validation: dict) -> list[dict]:
     """Turn a validate_post result into retry hints (issue #30).
 
@@ -379,13 +444,17 @@ def extract_gate_failures(validation: dict) -> list[dict]:
 
 
 def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterClient,
-                  previous_failures: list[dict] | None = None, attempt: int = 0) -> str | None:
+                  previous_failures: list[dict] | None = None, attempt: int = 0,
+                  recent_openings: list[str] | None = None) -> str | None:
     """Generate post draft via LLM.
 
     previous_failures: gate feedback from the prior attempt, injected into the
     prompt so the model fixes the specific problem instead of re-rolling blind
     (issue #30). temperature rises slightly on later attempts to escape a stuck
     formulation.
+
+    recent_openings: first sentences of the latest published posts, injected
+    into the morning prompt so the hook doesn't repeat day to day.
     """
     summary = parse_summary(candidate.get("summary"))
     editorial = summary.get("editorial", {})
@@ -434,6 +503,7 @@ def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterCl
             paragraphs_max=post_params.get("paragraphs", [4, 5])[1],
             max_bold=post_params.get("max_bold", 1),
             previous_failures=previous_failures or [],
+            recent_openings=recent_openings or [],
         )
 
     # Nudge temperature up on retries to escape a stuck formulation.
@@ -701,14 +771,22 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         title=candidate["title"][:60] if candidate["title"] else "",
     )
 
-    # Generate with retry (max 3 attempts if quality gate fails). Each retry
-    # is "informed": the prior attempt's gate feedback goes into the prompt
-    # (issue #30) instead of re-rolling the same prompt blind.
+    # Generate with retry (max 3 attempts if a check fails). Each retry is
+    # "informed": the prior attempt's feedback goes into the prompt (issue #30)
+    # instead of re-rolling the same prompt blind. Two checks run in order:
+    # the deterministic regex gate (safety layer), then the LLM editor
+    # (quality layer — reads the post as one whole text). Editor problems feed
+    # the retry prompt the same way gate failures do.
+    editor_cfg = policy.get("llm_editor") or {}
+    editor_enabled = editor_cfg.get("enabled", True)
+
     post = None
     previous_failures: list[dict] | None = None
+    recent_openings = fetch_recent_openings() if slot == "morning" else []
     for attempt in range(3):
         post = generate_post(candidate, slot, policy, client,
-                             previous_failures=previous_failures, attempt=attempt)
+                             previous_failures=previous_failures, attempt=attempt,
+                             recent_openings=recent_openings)
         if post is None:
             return 1
 
@@ -720,8 +798,30 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         )
 
         if validation["ok"]:
-            log.info("quality_gate_passed", attempt=attempt + 1, slot=slot, pipeline_env=pipeline_env)
-            break
+            review = {"ok": True, "problems": [], "skipped": True}
+            if editor_enabled:
+                from aibp.generation.llm_editor import editor_failures, review_post
+                review = review_post(
+                    post, slot, client,
+                    source_title=candidate.get("title", ""),
+                    source_excerpt=candidate.get("text") or "",
+                    model=editor_cfg.get("model"),
+                )
+            if review["ok"]:
+                log.info(
+                    "quality_gate_passed",
+                    attempt=attempt + 1, slot=slot, pipeline_env=pipeline_env,
+                    llm_editor="skipped" if review.get("skipped") else "approved",
+                )
+                break
+            previous_failures = editor_failures(review)
+            log.warning(
+                "llm_editor_rejected",
+                attempt=attempt + 1,
+                pipeline_env=pipeline_env,
+                problems=[p["key"] for p in review["problems"]],
+                informed_retry=attempt < 2,
+            )
         else:
             previous_failures = extract_gate_failures(validation)
             log.warning(
@@ -731,14 +831,14 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 hard_fails=validation["hard_fail_keys"],
                 informed_retry=attempt < 2,
             )
-            if attempt == 2:
-                log.error("quality_gate_failed_3_attempts", candidate=candidate["id"])
-                if pipeline_env == "prod":
-                    execute(
-                        "UPDATE feed_items SET status = 'rejected' WHERE id = %s",
-                        (candidate["id"],),
-                    )
-                return 1
+        if attempt == 2:
+            log.error("quality_gate_failed_3_attempts", candidate=candidate["id"])
+            if pipeline_env == "prod":
+                execute(
+                    "UPDATE feed_items SET status = 'rejected' WHERE id = %s",
+                    (candidate["id"],),
+                )
+            return 1
     else:
         return 1
 

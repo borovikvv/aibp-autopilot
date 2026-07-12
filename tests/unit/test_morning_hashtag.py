@@ -67,10 +67,11 @@ def test_hashtag_does_not_add_second_link():
 
 
 # ═══════════════════════════════════════════════════════════════════
-# variant C (bold lead-ins) passes the quality gate at max_bold=4
+# variant C (bold lead-ins) is retired for daily slots: structure is an
+# internal checklist now, and visible labels hard-fail the gate
 # ═══════════════════════════════════════════════════════════════════
 
-def test_variant_c_morning_post_passes_gate():
+def test_variant_c_labels_now_fail_morning_gate():
     from aibp.generation.quality_gate import validate_post
 
     post = (
@@ -83,7 +84,24 @@ def test_variant_c_morning_post_passes_gate():
         f"#метрика\n{SOURCE}"
     )
     result = validate_post(post, expected_url="https://example.com/a", slot="morning")
-    # 4 bold uses, a metric present, one source link → no hard fail
+    assert result["hard_fail_keys"] == ["section_labels"]
+
+
+def test_prose_morning_post_with_hashtag_passes_gate():
+    """The same content woven into prose (no labels) clears the gate."""
+    from aibp.generation.quality_gate import validate_post
+
+    post = (
+        "<b>Как переложили проверку заявок на модель</b>\n\n"
+        "Заявки теперь классифицирует модель, а не оператор вручную — время "
+        "проверки упало с 40 до 12 минут на заявку.\n\n"
+        "Спорные кейсы всё равно уходят человеку, и это осознанная граница.\n\n"
+        "Что это меняет для очереди обработки в ближайший месяц.\n\n"
+        "Отдельный абзац про следующий шаг и ограничение подхода.\n\n"
+        f"#метрика\n{SOURCE}"
+    )
+    result = validate_post(post, expected_url="https://example.com/a", slot="morning")
     assert result["hard_fail_keys"] == []
+    assert result["verdicts"]["section_labels"]["status"] == "pass"
     assert result["verdicts"]["metric_presence"]["status"] == "pass"
     assert result["verdicts"]["source_link"]["status"] == "pass"

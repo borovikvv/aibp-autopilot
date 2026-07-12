@@ -72,6 +72,17 @@ METRIC_PRESENCE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Bold section labels — "<b>Процесс.</b> …", "<b>Метрика.</b> …" and the like.
+# Daily posts must weave structure into prose (structure is an internal
+# checklist, not visible markup); repeating labels every day reads as
+# template-filling and triggers banner blindness. Hard fail for morning and
+# evening; weekly_case keeps them deliberately — a once-a-week branded format.
+# Matches any single capitalized word in bold ending with "." or ":" — the
+# label vocabulary drifts ("Контекст.", "Риск."), so no fixed word list.
+SECTION_LABEL_RE = re.compile(
+    r"<b>\s*[А-ЯЁA-Z][\w-]*[.:]\s*</b>",
+)
+
 # Source framing — post must NOT refer to source in body (only at end)
 SOURCE_FRAMING_RE = re.compile(
     r"(В\s+материал[еа](?:\s+[A-ZА-ЯЁA-Za-zА-Яа-яЁё0-9 ._—–-]{0,80})?|"
@@ -222,6 +233,16 @@ def validate_post(
         [{"text": "opening refers to source"}] if opening_fail else [],
     )
 
+    # Visible section labels — banned in daily slots, allowed in weekly_case
+    # (branded weekly format) and weekly_digest.
+    if slot in ("morning", "evening"):
+        label_hits = _hits(SECTION_LABEL_RE, body_html)
+        verdicts["section_labels"] = _verdict(
+            "fail" if label_hits else "pass",
+            label_hits,
+            "structure must be woven into prose, not marked with bold labels" if label_hits else None,
+        )
+
     tech_hits = _hits(TECHNICAL_DENSITY_RE, body_plain)
     has_translation = bool(WORKFLOW_TRANSLATION_RE.search(body_plain))
     tech_fail = bool(tech_hits) and (len(tech_hits) >= 2 or not has_translation)
@@ -306,6 +327,8 @@ def validate_post(
         "source_link", "forbidden_terms", "ai_template_phrases",
         "source_framing", "opening", "technical_density",
     ]
+    if "section_labels" in verdicts:
+        hard_keys.append("section_labels")
     # Add dynamic gates with action=fail
     if extra_gates:
         for gate in extra_gates:
