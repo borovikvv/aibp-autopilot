@@ -1,0 +1,180 @@
+# ═══════════════════════════════════════════════════════════════════
+# AIBP Autopilot — STAGE (test channel) policy — ADR-0007 / issue #22
+# ═══════════════════════════════════════════════════════════════════
+# Human-QA preview policy for @AI_Business_Pulse_Test. Mirrors policy.yaml
+# except deliberate differences:
+#   - visual_policy.enabled/generate: true — post images are trialled on the
+#     test channel before они включаются в прод (этап 8).
+# Keep in sync with policy.yaml when editing shared sections.
+
+# ═══════════════════════════════════════════════════════════════════
+# AIBP Autopilot — Canonical Policy
+# ═══════════════════════════════════════════════════════════════════
+#
+# This file is the single source of truth for self-learning adjustments.
+# Read by:
+#   - Generation prompts (rendered via Jinja2)
+#   - Self-learning module (modified by policy_updater)
+#   - Quality gate (dynamic regex patterns)
+#
+# Versioned by sha256 hash. Stored in SQLite policies table.
+
+version: "v1_initial"
+autopilot_paused: true
+
+# ─── 1. Strategy Rubric Weights ────────────────────────────────────
+# Applied at candidate selection. Higher = more likely to be picked.
+rubric_weights:
+  process_under_ai: 1.0       # AI in sales, support, documents, ops
+  pilot_without_chaos: 1.0    # safe test design, owner, stop condition
+  implementation_metric: 1.0  # time, cost, quality measurements
+  ai_regulation: 1.0          # data, access, audit, human-in-loop
+  tool_through_scenario: 1.0  # tool fit for specific process
+  anti_hype: 1.0              # correction of inflated expectations
+
+# ─── 2. Post Parameters (per slot) ─────────────────────────────────
+post_params:
+  morning:
+    target_chars: [800, 1400]
+    paragraphs: [4, 5]
+    max_bold: 1          # headline only — bold section labels are banned in daily slots
+    max_emoji: 0
+    scheduled_hour_msk: 10
+  evening:
+    target_chars: [400, 700]
+    paragraphs: [2, 3]
+    max_bold: 1
+    max_emoji: 0
+    scheduled_hour_msk: 18
+  weekly_digest:
+    target_chars: [2500, 4500]
+    paragraphs: [5, 8]
+    max_bold: 2
+    max_emoji: 0
+    scheduled_hour_msk: 19
+  weekly_case:
+    target_chars: [1200, 1800]
+    paragraphs: [4, 6]
+    max_bold: 4
+    max_emoji: 0
+    scheduled_hour_msk: 10
+
+# ─── CTA Variants (monetization funnel) ─────────────────────────────
+# Applied at generation: one CTA variant is sampled by weight and appended
+# to prod posts. Logged to post_features.cta_variant so pattern miner and
+# decision engine can optimize conversion (clicks/views), not just style.
+cta_variants:
+  save_forward: 1.0      # save/forward prompt (retention)
+  affiliate_link: 1.0    # push to the tracked source/offer link (revenue)
+  comment_prompt: 1.0    # discussion prompt (engagement signal)
+  poll: 1.0              # native poll — evening slot only (issue #33)
+
+# ─── Telegram native elements (issue #33) ──────────────────────────
+telegram:
+  # Attach a tracked "Открыть источник →" inline button to prod posts
+  # (in addition to the in-text source link). Needs TRACKING_BASE_URL.
+  source_button: false
+
+# ─── Weekly case slot (issue #40) ──────────────────────────────────
+# One weekday/week the morning slot is replaced by a deep "case study"
+# breakdown (process → tool → before/after numbers → stop condition).
+weekly_case:
+  enabled: true
+  weekday: 2   # 0=Mon; Wednesday's morning post becomes the weekly case
+
+# ─── LLM editor (holistic pre-publish review) ──────────────────────
+# Second LLM pass AFTER the regex gate: reads the post as ONE whole text —
+# single line of reasoning, no template feel, content coverage, hook quality,
+# leaked meta-text, invented numbers. A rejection feeds the informed-retry
+# prompt; infra failures degrade open (regex-validated post still publishes).
+llm_editor:
+  enabled: true
+  model: null   # null → default OpenRouter model; set to pin a specific one
+
+# ─── Competitor dedup (issue #40) ──────────────────────────────────
+competitor_dedup:
+  dup_threshold: 0.85    # cosine similarity >= this → duplicate (skip)
+  grey_threshold: 0.70   # <= this → unique; in between → LLM resolves
+
+# ─── 3. Regex Gates (auto-populated by self-learning) ─────────────
+# Each entry: {name, pattern, slot, action}
+# action: warn | fail
+# These are ADDED to the core patterns in editorial_quality_gate.py.
+# Core patterns (FORBIDDEN_RE, CLICHE_RE) cannot be modified by autopilot.
+regex_gates: []
+
+# ─── 4. Source Scoring (domain adjustments) ────────────────────────
+# Applied to source_fit_score during enrichment.
+# Range: -1.0 (block) to +1.0 (boost)
+source_scores:
+  default: 0.0
+  # Examples (populated by self-learning):
+  # openai.com: 0.3
+  # anthropic.com: 0.3
+  # some-spam-site.com: -0.8
+
+# ─── 5. Visual Policy ──────────────────────────────────────────────
+visual_policy:
+  title_max_chars: 78
+  blocks_range: [3, 5]
+  palette: "editorial_light"  # editorial_light | editorial_dark
+  kind: "process_scheme"      # process_scheme | editorial_metaphor
+  width: 1344
+  height: 768
+  # Rich-message media (issue #28/#34). enabled turns media on; then either
+  # set static_image_url (fixed scheme/banner) OR generate: true to render a
+  # per-post image via OpenRouter (google/gemini-2.5-flash-image). static wins
+  # if both are set. Generation failure → text-only post.
+  enabled: true
+  generate: true
+  static_image_url: ""
+
+# ─── Safety boundaries (DO NOT modify via autopilot) ───────────────
+safety:
+  # Composite reward (issue #37, ADR-0010): what the self-learning loop
+  # optimizes. reward = Σ(weight · component) / subscribers, at 48h horizon.
+  # Weights are heuristic value estimates (a forward ≈ 25 views, etc.) —
+  # tune manually as real click/CPS data accumulates.
+  reward_weights:
+    views: 1.0
+    forwards: 25.0     # organic reach + Telegram recommendation signal
+    clicks: 15.0       # tracked link clicks (monetization funnel)
+    subs_delta: 50.0   # attributed subscriber change (negative = churn)
+  # Δsubs attribution window after posted_at; clipped at the next post.
+  subs_attribution_hours: 24
+
+  # Rate limits
+  max_changes_per_day: 1
+  max_changes_per_week: 3
+  max_rollbacks_per_week: 3
+
+  # Approval gate (issue #20): risk tiering of experiment types.
+  # Low risk (rubric_weight, cta, source_score, visual) auto-applies as before;
+  # high risk (post structure, quality gates) requires a human tap on a
+  # Telegram approve/reject button before promote.
+  approval_required_for: [post_param, regex_gate]
+
+  # Risk-tiered experiment thresholds (issue #42): low-risk experiments
+  # (auto-rollback) get a lower promote bar; high-risk (approval gate)
+  # get a longer window and the strict bar.
+  experiment_tiers:
+    low_risk:
+      experiment_types: [rubric_weight, cta, source_score, visual]
+      promote_probability: 0.90
+      min_effect_pct: 5
+      experiment_window_days: 14
+    high_risk:
+      experiment_types: [post_param, regex_gate]
+      promote_probability: 0.95
+      min_effect_pct: 5
+      experiment_window_days: 28
+
+  # Anomaly detection thresholds
+  engagement_drop_24h_pct: 30   # freeze if >30% drop in 24h
+  engagement_drop_7d_pct: 50    # freeze if >50% drop in 7d
+  subscribers_drop_24h_pct: 5   # freeze if >5% subs loss in 24h
+
+  # Rollback triggers (after promote)
+  rollback_48h_engagement_pct: 85  # rollback if <85% of baseline in 48h
+  rollback_7d_engagement_pct: 90   # rollback if <90% of baseline in 7d
+  rollback_7d_subscribers_pct: 97  # rollback if <97% subs in 7d

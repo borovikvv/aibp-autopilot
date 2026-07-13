@@ -120,11 +120,12 @@ def get_channel_id(target_channel: str) -> str:
 
 async def _publish_post_message(bot_token: str, chat_id: str, item: dict, post_text: str,
                                 reply_markup: dict | None = None) -> dict:
-    """Send the post as a rich message, choosing the path by length (issue #28).
+    """Send the post as a rich message (issue #28).
 
-    - media + text ≤ 1024 → sendPhoto with the full text as caption (one msg);
-    - media + longer text → sendMessage with the image as a large link preview
-      (one msg, up to 4096 chars);
+    - media → sendMessage with the image as a large link preview above the
+      text: ONE message, full HTML text up to 4096 chars. sendPhoto+caption
+      is deliberately not used — captions cap at 1024 chars and render as a
+      photo with attached text instead of a rich post;
     - no media, or a media send that fails → plain text message (fallback:
       a post without a picture beats a failed publish).
 
@@ -134,22 +135,15 @@ async def _publish_post_message(bot_token: str, chat_id: str, item: dict, post_t
     has_media = bool(item.get("need_image") and item.get("image_url"))
 
     if has_media:
-        if len(post_text) <= CAPTION_LIMIT:
-            result = await send_photo(
-                bot_token=bot_token, chat_id=chat_id,
-                photo_url=item["image_url"], caption=post_text,
-                reply_markup=reply_markup,
-            )
-        else:
-            result = await send_message(
-                bot_token=bot_token, chat_id=chat_id, text=post_text,
-                reply_markup=reply_markup,
-                link_preview_options={
-                    "url": item["image_url"],
-                    "prefer_large_media": True,
-                    "show_above_text": True,
-                },
-            )
+        result = await send_message(
+            bot_token=bot_token, chat_id=chat_id, text=post_text,
+            reply_markup=reply_markup,
+            link_preview_options={
+                "url": item["image_url"],
+                "prefer_large_media": True,
+                "show_above_text": True,
+            },
+        )
         if result.get("ok"):
             return result
         log.warning("media_publish_failed_fallback_text",

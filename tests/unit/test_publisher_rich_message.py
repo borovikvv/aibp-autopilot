@@ -54,14 +54,19 @@ def test_no_media_sends_plain_text():
     assert "link_preview_options" not in sm.await_args.kwargs
 
 
-def test_short_post_with_media_uses_photo_caption():
+def test_short_post_with_media_uses_link_preview():
+    """Short posts with media also go out as ONE rich message — never
+    sendPhoto+caption (caption caps at 1024 and reads as an attachment)."""
     item = {"id": 1, "need_image": True, "image_url": "https://x/i.png"}
     with patch.object(publisher, "send_message", new=AsyncMock(return_value=OK)) as sm, \
          patch.object(publisher, "send_photo", new=AsyncMock(return_value=OK)) as sp:
         _run(publisher._publish_post_message("T", "chat", item, "x" * 500))
-    sp.assert_awaited_once()
-    assert sp.await_args.kwargs["caption"] == "x" * 500
-    sm.assert_not_called()
+    sp.assert_not_called()
+    sm.assert_awaited_once()
+    lpo = sm.await_args.kwargs["link_preview_options"]
+    assert lpo["url"] == "https://x/i.png"
+    assert lpo["prefer_large_media"] is True
+    assert lpo["show_above_text"] is True
 
 
 def test_long_post_with_media_uses_link_preview():
@@ -77,23 +82,26 @@ def test_long_post_with_media_uses_link_preview():
     assert lpo["prefer_large_media"] is True
 
 
-def test_boundary_exactly_at_caption_limit_uses_photo():
+def test_boundary_at_caption_limit_still_uses_link_preview():
     item = {"id": 1, "need_image": True, "image_url": "https://x/i.png"}
     with patch.object(publisher, "send_message", new=AsyncMock(return_value=OK)) as sm, \
          patch.object(publisher, "send_photo", new=AsyncMock(return_value=OK)) as sp:
         _run(publisher._publish_post_message("T", "chat", item, "z" * publisher.CAPTION_LIMIT))
-    sp.assert_awaited_once()
-    sm.assert_not_called()
+    sp.assert_not_called()
+    sm.assert_awaited_once()
+    assert "link_preview_options" in sm.await_args.kwargs
 
 
 def test_media_failure_falls_back_to_text():
-    """A failed photo send must fall back to a plain text message (issue #28)."""
+    """A failed rich send must fall back to a plain text message (issue #28)."""
     item = {"id": 1, "need_image": True, "image_url": "https://x/broken.png"}
-    with patch.object(publisher, "send_photo", new=AsyncMock(return_value=FAIL)) as sp, \
-         patch.object(publisher, "send_message", new=AsyncMock(return_value=OK)) as sm:
+    sends = [FAIL, OK]
+    sm = AsyncMock(side_effect=sends)
+    with patch.object(publisher, "send_message", new=sm):
         result = _run(publisher._publish_post_message("T", "chat", item, "short"))
-    sp.assert_awaited_once()          # tried media
-    sm.assert_awaited_once()          # fell back to text
+    assert sm.await_count == 2        # tried media, fell back to text
+    assert "link_preview_options" in sm.await_args_list[0].kwargs   # first try: rich
+    assert "link_preview_options" not in sm.await_args_list[1].kwargs  # fallback: plain
     assert result == OK
 
 

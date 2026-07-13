@@ -926,6 +926,15 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     }
 
     if pipeline_env == "stage":
+        # Post image for the test channel: same resolution order as prod
+        # (static override, else OpenRouter generation), gated by the STAGE
+        # policy's visual_policy — prod stays image-free until этап 8.
+        image_url = resolve_post_image(policy)
+        vp = policy.get("visual_policy") or {}
+        if image_url is None and vp.get("enabled") and vp.get("generate"):
+            from aibp.generation.image_gen import generate_post_image
+            image_url = generate_post_image(candidate["id"], candidate, policy, client)
+
         # INSERT new row for stage post (original prod row stays intact)
         dupe_key = f"stage:{candidate['id']}:{slot}"
         execute(
@@ -934,7 +943,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 url, url_hash, title, text, source, source_domain, source_lang,
                 source_published_at, status, category, dupe_key,
                 summary, post_draft, review_status, scheduled_at,
-                is_used, used_as, campaign_tag, need_image,
+                is_used, used_as, campaign_tag, need_image, image_url,
                 pipeline_env, target_channel, source_item_id,
                 created_at, updated_at
             ) VALUES (
@@ -942,7 +951,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 %s, 'stage_ready', %s, %s,
                 COALESCE((SELECT summary FROM feed_items WHERE id = %s), '{}'::jsonb) || %s::jsonb,
                 %s, 'approved', %s,
-                false, %s, %s, false,
+                false, %s, %s, %s, %s,
                 'stage', 'test', %s,
                 now(), now()
             )
@@ -969,6 +978,8 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 scheduled.astimezone(UTC),
                 f"{slot}_stage_shadow",
                 f"{slot}_stage",
+                bool(image_url),
+                image_url,
                 candidate["id"],
             ),
         )
