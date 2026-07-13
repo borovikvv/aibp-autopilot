@@ -20,8 +20,13 @@ from aibp.utils.summary import parse_summary
 log = structlog.get_logger()
 
 # Visual style per visual_policy.kind — kept sober to match the channel voice.
+# Styles must never ask for labels/words: image models render text unreliably
+# (misspelled pseudo-words), so every kind is strictly text-free.
 _KIND_STYLE = {
-    "process_scheme": "a clean minimal process diagram with labeled boxes and arrows, flat editorial style",
+    "process_scheme": (
+        "a clean minimal abstract process visual — unlabeled geometric shapes "
+        "connected by arrows showing flow and transformation, flat editorial style"
+    ),
     "editorial_metaphor": "a restrained editorial illustration with a single visual metaphor, flat style",
 }
 
@@ -34,7 +39,10 @@ def build_image_prompt(candidate: dict, policy: dict) -> str:
     style = _KIND_STYLE.get(vp.get("kind", "process_scheme"), _KIND_STYLE["process_scheme"])
     palette = vp.get("palette", "editorial_light")
     return (
-        f"{style}. Palette: {palette}. No text, no logos, no watermark, no captions. "
+        f"{style}. Palette: {palette}. "
+        f"STRICTLY NO TEXT of any kind: no letters, no words, no numbers, no labels, "
+        f"no captions, no logos, no watermarks, no typography, no writing on objects. "
+        f"Convey the subject purely through imagery — never write it out. "
         f"Subject: {angle}. Practical business-AI context, sober tone, no hype."
     )
 

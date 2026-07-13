@@ -118,7 +118,9 @@ visual_policy:
   title_max_chars: 78
   blocks_range: [3, 5]
   palette: "editorial_light"  # editorial_light | editorial_dark
-  kind: "process_scheme"      # process_scheme | editorial_metaphor
+  # editorial_metaphor: визуальная метафора без схемных блоков — не провоцирует
+  # модель на надписи (image-модели пишут слова с ошибками, issue: кривой текст)
+  kind: "editorial_metaphor"  # process_scheme | editorial_metaphor
   width: 1344
   height: 768
   # Rich-message media (issue #28/#34). enabled turns media on; then either

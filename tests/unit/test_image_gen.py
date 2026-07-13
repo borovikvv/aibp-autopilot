@@ -39,9 +39,11 @@ def img_settings(tmp_path):
 def test_prompt_includes_angle_kind_palette():
     prompt = image_gen.build_image_prompt(CANDIDATE, POLICY)
     assert "AI проверяет заявки" in prompt
-    assert "process diagram" in prompt          # process_scheme style
+    assert "abstract process visual" in prompt  # process_scheme style, text-free
+    assert "unlabeled" in prompt                # never ask the model for labels
     assert "editorial_light" in prompt
     assert "no text" in prompt.lower()          # avoid baked-in captions
+    assert "no letters" in prompt.lower()       # hardened: models misspell words
 
 
 def test_prompt_falls_back_to_title_without_angle():
