@@ -119,6 +119,10 @@ visual_policy:
   enabled: false
   generate: false
   static_image_url: ""
+  # Слоты с картинкой (пусто/отсутствует = все). Редакционное решение
+  # 2026-07-13: иллюстрация только у утренней колонны и weekly case,
+  # вечерняя заметка — текст.
+  slots: [morning, weekly_case]
 
 # ─── Safety boundaries (DO NOT modify via autopilot) ───────────────
 safety:

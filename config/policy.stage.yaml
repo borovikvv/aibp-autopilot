@@ -130,6 +130,10 @@ visual_policy:
   enabled: true
   generate: true
   static_image_url: ""
+  # Картинки только у «якорных» постов: утренняя колонна и weekly case.
+  # Вечерняя короткая заметка остаётся текстовой (редакционное решение
+  # 2026-07-13; после cutover можно проверить visual-экспериментом).
+  slots: [morning, weekly_case]
 
 # ─── Safety boundaries (DO NOT modify via autopilot) ───────────────
 safety:

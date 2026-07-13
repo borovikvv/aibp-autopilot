@@ -670,6 +670,25 @@ def resolve_post_image(policy: dict) -> str | None:
     return url if url.startswith(("http://", "https://")) else None
 
 
+def _resolve_slot_image(candidate: dict, slot: str, policy: dict, client) -> str | None:
+    """Post image for one slot: static override, else OpenRouter generation.
+
+    visual_policy.slots (optional) limits images to the listed slots — the
+    editorial call is that the morning pillar and weekly case carry an
+    illustration while the short evening note stays text-only. Absent list =
+    all slots (backward compatible).
+    """
+    vp = policy.get("visual_policy") or {}
+    allowed_slots = vp.get("slots")
+    if allowed_slots and slot not in allowed_slots:
+        return None
+    image_url = resolve_post_image(policy)
+    if image_url is None and vp.get("enabled") and vp.get("generate"):
+        from aibp.generation.image_gen import generate_post_image
+        image_url = generate_post_image(candidate["id"], candidate, policy, client)
+    return image_url
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Click tracking (issue #15)
 # ═══════════════════════════════════════════════════════════════════
@@ -929,11 +948,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         # Post image for the test channel: same resolution order as prod
         # (static override, else OpenRouter generation), gated by the STAGE
         # policy's visual_policy — prod stays image-free until этап 8.
-        image_url = resolve_post_image(policy)
-        vp = policy.get("visual_policy") or {}
-        if image_url is None and vp.get("enabled") and vp.get("generate"):
-            from aibp.generation.image_gen import generate_post_image
-            image_url = generate_post_image(candidate["id"], candidate, policy, client)
+        image_url = _resolve_slot_image(candidate, slot, policy, client)
 
         # INSERT new row for stage post (original prod row stays intact)
         dupe_key = f"stage:{candidate['id']}:{slot}"
@@ -997,12 +1012,12 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
 
         # Post image: operator static override, else OpenRouter generation
         # when enabled (issue #28/#34). Failure → text-only post.
-        image_url = resolve_post_image(policy)
-        image_status = None
         vp = policy.get("visual_policy") or {}
-        if image_url is None and vp.get("enabled") and vp.get("generate"):
-            from aibp.generation.image_gen import generate_post_image
-            image_url = generate_post_image(candidate["id"], candidate, policy, client)
+        image_url = _resolve_slot_image(candidate, slot, policy, client)
+        image_status = None
+        slot_allows_image = not vp.get("slots") or slot in vp["slots"]
+        if (slot_allows_image and vp.get("enabled") and vp.get("generate")
+                and not vp.get("static_image_url")):
             image_status = "generated" if image_url else "failed"
 
         execute(

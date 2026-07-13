@@ -161,3 +161,26 @@ def test_client_generate_image_none_on_empty_data(monkeypatch, tmp_path):
 
     monkeypatch.setattr(llm_client.httpx, "Client", lambda *a, **k: _Client())
     assert client.generate_image("p") is None
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Per-slot image gating (visual_policy.slots)
+# ═══════════════════════════════════════════════════════════════════
+
+def test_slot_image_gating():
+    from aibp.generation.pipeline import _resolve_slot_image
+    policy = {"visual_policy": {"enabled": True, "generate": False,
+                                "static_image_url": "https://x/i.png",
+                                "slots": ["morning", "weekly_case"]}}
+    cand = {"id": 1, "title": "t", "summary": {}}
+    assert _resolve_slot_image(cand, "morning", policy, None) == "https://x/i.png"
+    assert _resolve_slot_image(cand, "weekly_case", policy, None) == "https://x/i.png"
+    assert _resolve_slot_image(cand, "evening", policy, None) is None
+
+
+def test_slot_image_no_slots_list_means_all():
+    from aibp.generation.pipeline import _resolve_slot_image
+    policy = {"visual_policy": {"enabled": True, "generate": False,
+                                "static_image_url": "https://x/i.png"}}
+    cand = {"id": 1, "title": "t", "summary": {}}
+    assert _resolve_slot_image(cand, "evening", policy, None) == "https://x/i.png"
