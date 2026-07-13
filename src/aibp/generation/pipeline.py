@@ -513,7 +513,9 @@ def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterCl
         post = client.chat(
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
-            max_tokens=2000,
+            # Reasoning models (sonnet-5) spend tokens on the reasoning channel
+            # before the visible answer — 2000 starved the content entirely.
+            max_tokens=4000,
         )
         return post.strip()
     except Exception as e:
@@ -788,7 +790,12 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                              previous_failures=previous_failures, attempt=attempt,
                              recent_openings=recent_openings)
         if post is None:
-            return 1
+            # LLM-level failure (transient API error, empty completion) — worth
+            # another attempt, unlike a permanent config problem. Bail out only
+            # when every attempt failed.
+            if attempt == 2:
+                return 1
+            continue
 
         validation = validate_post(
             post=post,

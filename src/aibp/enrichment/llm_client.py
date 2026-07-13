@@ -176,7 +176,17 @@ class OpenRouterClient:
         cost = float(actual_cost) if actual_cost is not None else self._estimate_cost(model, input_t, output_t)
         self._log_cost(model, input_t, output_t, cost)
 
-        text = result["choices"][0]["message"]["content"]
+        choice = result["choices"][0]
+        text = choice["message"]["content"]
+        if not text:
+            # Reasoning models can burn the whole max_tokens budget on the
+            # reasoning channel and return an empty content field
+            # (finish_reason=length). Surface it as a retryable error instead
+            # of handing None to callers that expect a string.
+            reason = choice.get("finish_reason")
+            log.error("llm_empty_content", model=model, finish_reason=reason,
+                      output_tokens=output_t)
+            raise LLMError(f"empty completion content (finish_reason={reason})")
         log.info("llm_call_ok", model=model, input_tokens=input_t, output_tokens=output_t, cost_usd=round(cost, 4))
         return text
 
