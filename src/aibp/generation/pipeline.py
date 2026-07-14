@@ -567,8 +567,46 @@ def select_cta_variant(policy: dict, slot: str | None = None) -> str | None:
     return random.choices(list(valid.keys()), weights=list(valid.values()))[0]
 
 
-def build_evening_poll() -> dict:
-    """A native poll for the evening slot (issue #33)."""
+_POLL_PROMPT = (
+    "Ниже — вечерний пост Telegram-канала про практичный AI в рабочих задачах. "
+    "Составь к нему нативный опрос, привязанный к СМЫСЛУ именно этого поста: "
+    "вопрос продолжает мысль поста и спрашивает читателя о его опыте или выборе.\n"
+    "Правила:\n"
+    "- вопрос ≤ 100 символов, без клише и хайпа;\n"
+    "- 3-4 коротких варианта (≤ 40 символов), взаимоисключающих, разговорных;\n"
+    "- не пересказывай пост в вопросе; спрашивай про ситуацию читателя.\n"
+    "Верни строго JSON: {\"question\": \"...\", \"options\": [\"...\", \"...\"]}\n\n"
+    "ПОСТ:\n{post}"
+)
+
+
+def build_evening_poll(post: str | None = None,
+                       client: OpenRouterClient | None = None) -> dict:
+    """A native poll for the evening slot (issue #33).
+
+    With a post + client, the question is written by a cheap LLM so it
+    continues THIS post's thought (a static template read as unrelated to the
+    post). Falls back to the generic template on any failure.
+    """
+    if post and client is not None:
+        try:
+            s = get_settings()
+            data = client.chat_json(
+                messages=[{"role": "user",
+                           "content": _POLL_PROMPT.replace("{post}", post)}],
+                model=s.openrouter_enrichment_model,
+                temperature=0.4,
+                max_tokens=1000,
+            )
+            question = str(data.get("question") or "").strip()[:300]
+            options = [str(o).strip()[:100] for o in (data.get("options") or [])
+                       if str(o).strip()][:4]
+            if question and len(options) >= 2:
+                return {"question": question, "options": options}
+            log.warning("poll_gen_bad_shape", question=bool(question),
+                        options=len(options))
+        except Exception as e:
+            log.warning("poll_gen_failed_fallback_static", error=str(e))
     return {"question": EVENING_POLL["question"], "options": list(EVENING_POLL["options"])}
 
 
@@ -906,9 +944,10 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                          fallback_variant=candidate_variant, candidate_id=candidate["id"])
 
         if candidate_variant == POLL_VARIANT:
-            poll = build_evening_poll()
+            poll = build_evening_poll(post=post, client=client)
             cta_variant = POLL_VARIANT
-            log.info("evening_poll_attached", candidate_id=candidate["id"])
+            log.info("evening_poll_attached", candidate_id=candidate["id"],
+                     question=poll["question"][:60])
         elif candidate_variant:
             cta_check = validate_cta_text(CTA_TEMPLATES[candidate_variant])
             if cta_check["ok"]:
