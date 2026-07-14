@@ -116,8 +116,10 @@ visual_policy:
   # set static_image_url (fixed scheme/banner) OR generate: true to render a
   # per-post image via OpenRouter (google/gemini-2.5-flash-image). static wins
   # if both are set. Generation failure → text-only post.
-  enabled: false
-  generate: false
+  # Включено в проде 2026-07-14 (этап 8, первая фича) после двухдневной
+  # обкатки на тест-канале: двухступенчатый промпт, text-free, rich message.
+  enabled: true
+  generate: true
   static_image_url: ""
   # Слоты с картинкой (пусто/отсутствует = все). Редакционное решение
   # 2026-07-13: иллюстрация только у утренней колонны и weekly case,
