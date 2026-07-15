@@ -18,7 +18,7 @@ log = structlog.get_logger()
 
 ENRICHMENT_PROMPT = """You are an editorial assistant for a Russian-language Telegram channel about practical AI in business workflows (@AI_Business_Pulse).
 
-For each news item, classify it according to the channel's editorial strategy. The channel focuses on: "which work task can now be done differently with AI — and where the limit is".
+For each news item, classify it according to the channel's editorial strategy. The channel focuses on: "which work task can now be done differently with AI — and where the limit is". Readers are mostly in Russia and CIS.
 
 Classify the following article:
 
@@ -35,6 +35,7 @@ Return JSON with this exact schema:
   "topic_cluster": "sales_revenue" | "support_service" | "documents_backoffice" | "operations_management" | "marketing_content_ops" | "hr_training" | "risk_data_governance" | "ai_tools" | null,
   "recommended_format": "morning" | "evening" | "weekly_digest" | "weekly_case" | null,
   "source_fit_score": 1-5 (5 = perfect fit, 1 = irrelevant),
+  "audience_relevance": 1-5 (how much this matters to readers in Russia and CIS),
   "importance_hint": "A" | "B" | "C",
   "rank_score": 0-100 (editorial priority),
   "one_sentence_angle": "one-sentence editorial thesis in Russian",
@@ -46,6 +47,8 @@ Rules:
 - "source_fit_score" >= 4 means the source supports a strong editorial post.
 - "recommended_format": "weekly_case" when the item is a real implementation case (cases/regulation/research) with concrete before/after figures — a source that supports a deep "process → tool → metric → limit" breakdown.
 - "one_sentence_angle" must be in Russian and reflect the practical/business angle, not the news itself.
+- "audience_relevance": 5 = directly about Russia/CIS (local regulation, market, companies, tools usable there); 3-4 = global topic fully applicable to readers there (models, workflows, pricing they can actually access); 1-2 = jurisdiction-specific foreign news (EU/US legal or administrative detail) with no transferable consequence.
+- Regulation items specifically: foreign regulation (EU AI Act, US executive orders, etc.) defaults to audience_relevance 2. Raise it ONLY when there is a concrete consequence for readers in Russia/CIS — model availability, cross-border data, export controls, a transferable compliance practice — and name that consequence in one_sentence_angle.
 - Return ONLY the JSON, no other text.
 """
 
@@ -78,6 +81,21 @@ def enrich_item(item: dict, client: OpenRouterClient, policy: dict) -> dict | No
     base_score = float(result.get("source_fit_score", 3))
     adjusted_score = max(0, min(5, base_score + score_adjustment))
     result["source_fit_score_adjusted"] = adjusted_score
+
+    # Geographic audience fit: readers are mostly in Russia/CIS, so rank_score
+    # is scaled by audience_relevance deterministically here (not trusted to
+    # the LLM's own rank). Multipliers live in policy.audience — an empty or
+    # missing section disables the whole adjustment.
+    multipliers = (policy.get("audience") or {}).get("relevance_multipliers") or {}
+    if multipliers:
+        try:
+            relevance = max(1, min(5, int(result.get("audience_relevance"))))
+        except (TypeError, ValueError):
+            relevance = 3
+        result["audience_relevance"] = relevance
+        mult = float(multipliers.get(relevance, 1.0))
+        base_rank = float(result.get("rank_score", 50))
+        result["rank_score"] = int(round(max(0.0, min(100.0, base_rank * mult))))
 
     return result
 

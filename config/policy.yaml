@@ -23,6 +23,20 @@ rubric_weights:
   tool_through_scenario: 1.0  # tool fit for specific process
   anti_hype: 1.0              # correction of inflated expectations
 
+# ─── Audience geography ─────────────────────────────────────────────
+# Readers are mostly in Russia and CIS. Enrichment scores every item 1-5 on
+# audience_relevance (5 = directly about RU/CIS, 1 = foreign jurisdiction
+# detail with no transferable consequence) and rank_score is multiplied
+# accordingly, so candidate selection prefers stories that matter to these
+# readers — especially regulation. Remove the section to disable.
+audience:
+  relevance_multipliers:
+    1: 0.5
+    2: 0.7
+    3: 1.0
+    4: 1.15
+    5: 1.3
+
 # ─── 2. Post Parameters (per slot) ─────────────────────────────────
 post_params:
   morning:

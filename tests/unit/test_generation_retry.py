@@ -105,6 +105,9 @@ def test_retry_loop_feeds_failure_into_second_prompt(monkeypatch):
 
     monkeypatch.setattr(pipeline, "OpenRouterClient", FakeClient)
     monkeypatch.setattr(pipeline, "select_candidate", lambda *a, **k: dict(_CANDIDATE))
+    # keep the test day-independent: on the weekly_case weekday the morning
+    # slot would be skipped entirely and the test would fail spuriously
+    monkeypatch.setattr(pipeline, "_should_skip_for_weekly_case", lambda *a, **k: False)
 
     # stage env: no PostgreSQL writes, no interleave/bandit/CTA (prod-only)
     rc = pipeline.run(slot="morning", pipeline_env="stage")
@@ -161,3 +164,12 @@ def test_extract_opening_empty_draft():
     assert pipeline.extract_opening(None) is None
     assert pipeline.extract_opening("") is None
     assert pipeline.extract_opening("<b>Только заголовок</b>") is None
+
+
+def test_generation_prompt_carries_audience_context():
+    """Foreign-jurisdiction stories must be angled at RU/CIS consequences."""
+    client = _CaptureClient()
+    pipeline.generate_post(_CANDIDATE, "morning", _MINIMAL_POLICY, client)
+    prompt = client.calls[0]["prompt"]
+    assert "Russia and CIS" in prompt
+    assert "consequence for these readers" in prompt

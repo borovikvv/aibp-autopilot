@@ -61,6 +61,13 @@ GENERATION_PROMPT = Template("""You are the editor of @AI_Business_Pulse — a R
 
 The channel formula: NOT "what happened in AI", but "which work task can now be done differently — and where the limit is".
 
+Readers are mostly in Russia and CIS. A story rooted in another jurisdiction
+(EU/US regulation, a foreign market move) earns its place ONLY through the
+consequence for these readers — model availability, cross-border data, tool
+access, a transferable practice. That consequence must BE the post's angle,
+not a footnote; if the source gives no such consequence, find the transferable
+lesson or reframe around what the reader can apply where they work.
+
 ## Your task
 
 Write ONE Russian Telegram post in HTML format for the {{ slot }} slot.
@@ -147,6 +154,11 @@ Return ONLY the post HTML. No explanation, no markdown fences.
 WEEKLY_CASE_PROMPT = Template("""You are the editor of @AI_Business_Pulse.
 
 Write ONE Russian Telegram post — a weekly "case study" breakdown for the weekly_case slot.
+
+Readers are mostly in Russia and CIS: when the case comes from another market,
+the breakdown must surface what transfers to their context (tools they can
+access, the process pattern, the numbers as a benchmark) — not the foreign
+company's local specifics.
 
 ## Source material
 TITLE: {{ title }}

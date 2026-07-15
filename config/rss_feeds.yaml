@@ -141,6 +141,16 @@ feeds:
     weight: 1.0
     lang: en
 
+  # RU/CIS regulation — the audience priority. Google News aggregator (same
+  # proven pattern as the GenAI ROI feed): native feeds of RU regulators and
+  # legal-tech media are flaky or absent. Query: "регулирование ИИ" OR "закон
+  # об искусственном интеллекте" OR (Минцифры/Центробанк AND ИИ).
+  - name: Google News — регулирование ИИ (РФ)
+    url: https://news.google.com/rss/search?q=%22%D1%80%D0%B5%D0%B3%D1%83%D0%BB%D0%B8%D1%80%D0%BE%D0%B2%D0%B0%D0%BD%D0%B8%D0%B5%20%D0%98%D0%98%22%20OR%20%22%D0%B7%D0%B0%D0%BA%D0%BE%D0%BD%20%D0%BE%D0%B1%20%D0%B8%D1%81%D0%BA%D1%83%D1%81%D1%81%D1%82%D0%B2%D0%B5%D0%BD%D0%BD%D0%BE%D0%BC%20%D0%B8%D0%BD%D1%82%D0%B5%D0%BB%D0%BB%D0%B5%D0%BA%D1%82%D0%B5%22%20OR%20%22%D1%80%D0%B5%D0%B3%D1%83%D0%BB%D0%B8%D1%80%D0%BE%D0%B2%D0%B0%D0%BD%D0%B8%D0%B5%20%D0%B8%D1%81%D0%BA%D1%83%D1%81%D1%81%D1%82%D0%B2%D0%B5%D0%BD%D0%BD%D0%BE%D0%B3%D0%BE%20%D0%B8%D0%BD%D1%82%D0%B5%D0%BB%D0%BB%D0%B5%D0%BA%D1%82%D0%B0%22%20OR%20%28%D0%9C%D0%B8%D0%BD%D1%86%D0%B8%D1%84%D1%80%D1%8B%20AND%20%D0%98%D0%98%29%20OR%20%28%D0%A6%D0%B5%D0%BD%D1%82%D1%80%D0%BE%D0%B1%D0%B0%D0%BD%D0%BA%20AND%20%D0%98%D0%98%29&hl=ru&gl=RU&ceid=RU:ru
+    category: regulation
+    weight: 1.3
+    lang: ru
+
   # ─── Russian sources ──────────────────────────────────────────
   # Habr feeds work via /ru/rss/hubs/{name}/ (the old /ru/hub/{name}/rss/
   # path was 404 — fixed path order). CNews covers enterprise AI deployments
@@ -179,6 +189,14 @@ feeds:
     url: https://proglib.io/feed
     category: blog
     weight: 0.8
+    lang: ru
+
+  # RU implementation cases — named companies with numbers, the raw material
+  # for weekly_case with maximum audience_relevance.
+  - name: Google News — внедрение ИИ (РФ)
+    url: https://news.google.com/rss/search?q=%22%D0%B2%D0%BD%D0%B5%D0%B4%D1%80%D0%B5%D0%BD%D0%B8%D0%B5%20%D0%98%D0%98%22%20OR%20%22%D0%B2%D0%BD%D0%B5%D0%B4%D1%80%D0%B8%D0%BB%D0%B0%20%D0%BD%D0%B5%D0%B9%D1%80%D0%BE%D1%81%D0%B5%D1%82%D1%8C%22%20OR%20%22%D0%B2%D0%BD%D0%B5%D0%B4%D1%80%D0%B8%D0%BB%D0%B8%20%D0%98%D0%98%22%20OR%20%22%D0%B0%D0%B2%D1%82%D0%BE%D0%BC%D0%B0%D1%82%D0%B8%D0%B7%D0%B0%D1%86%D0%B8%D1%8F%20%D1%81%20%D0%BF%D0%BE%D0%BC%D0%BE%D1%89%D1%8C%D1%8E%20%D0%98%D0%98%22&hl=ru&gl=RU&ceid=RU:ru
+    category: cases
+    weight: 1.0
     lang: ru
 
 # ─── Collection settings ─────────────────────────────────────────
