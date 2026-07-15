@@ -68,7 +68,10 @@ def enrich_item(item: dict, client: OpenRouterClient, policy: dict) -> dict | No
         result = client.chat_json(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=800,
+            # Reasoning models (deepseek-v4-flash) spend tokens on the
+            # reasoning channel first; 800 starved the JSON answer entirely
+            # and every item came back 'failed' (finish_reason=length).
+            max_tokens=4000,
         )
     except Exception as e:
         log.error("enrichment_llm_failed", item_id=item["id"], error=str(e))

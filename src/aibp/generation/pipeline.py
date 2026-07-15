@@ -608,7 +608,7 @@ def build_evening_poll(post: str | None = None,
                            "content": _POLL_PROMPT.replace("{post}", post)}],
                 model=s.openrouter_enrichment_model,
                 temperature=0.4,
-                max_tokens=1000,
+                max_tokens=2000,
             )
             question = str(data.get("question") or "").strip()[:300]
             options = [str(o).strip()[:100] for o in (data.get("options") or [])

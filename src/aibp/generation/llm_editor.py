@@ -82,7 +82,9 @@ def review_post(
             messages=[{"role": "user", "content": prompt}],
             model=model,
             temperature=0.0,
-            max_tokens=1000,
+            # Headroom for reasoning models — a length-starved reply reads as
+            # "editor unavailable" and silently skips the quality layer.
+            max_tokens=4000,
         )
     except Exception as e:
         log.warning("llm_editor_unavailable", error=str(e))

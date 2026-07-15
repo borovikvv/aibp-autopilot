@@ -68,7 +68,9 @@ def _llm_same_story(text_a: str, text_b: str) -> bool:
             ),
         }],
         temperature=0.0,
-        max_tokens=50,
+        # The answer is tiny but reasoning models need thinking room first —
+        # 50 tokens always came back empty on deepseek-v4-flash.
+        max_tokens=2000,
     )
     return bool(result.get("same", False))
 

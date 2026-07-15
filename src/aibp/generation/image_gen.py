@@ -61,7 +61,7 @@ def _scene_brief(angle: str, client: OpenRouterClient | None) -> str | None:
                        "content": _SCENE_BRIEF_PROMPT.format(angle=angle)}],
             model=s.openrouter_enrichment_model,
             temperature=0.4,
-            max_tokens=1000,
+            max_tokens=2000,
         ).strip()
         return brief or None
     except Exception as e:
