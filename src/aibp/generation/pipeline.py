@@ -720,6 +720,41 @@ def resolve_post_image(policy: dict) -> str | None:
     return url if url.startswith(("http://", "https://")) else None
 
 
+def _select_with_dedup(slot: str, policy: dict, pipeline_env: str,
+                       exclude_ids: set[int]) -> dict | None:
+    """Pick the next candidate, applying competitor dedup on prod.
+
+    Competitor dedup (issue #40) runs for prod only — stage re-publishes
+    existing prod sources for shadow comparison, and skipping a stage post
+    would lose a paired data point. Duplicate hits are added to exclude_ids
+    (mutated) so subsequent picks skip them. Degrades to 'unique' on any
+    infra failure — a downed embeddings service never blocks publishing.
+    """
+    if pipeline_env != "prod":
+        return select_candidate(slot, policy, pipeline_env=pipeline_env,
+                                exclude_ids=exclude_ids or None)
+    for _dedup_attempt in range(3):
+        candidate = select_candidate(slot, policy, pipeline_env=pipeline_env,
+                                     exclude_ids=exclude_ids or None)
+        if candidate is None:
+            return None
+        dedup_result = "unique"
+        try:
+            from aibp.self_learning.competitor_dedup import check_duplicate
+            dedup_result = check_duplicate(
+                candidate.get("title", ""),
+                candidate.get("text", ""),
+                policy,
+            )
+        except Exception as e:
+            log.warning("competitor_dedup_failed", error=str(e))
+        if dedup_result != "duplicate":
+            return candidate
+        log.info("candidate_skipped_competitor_dup", candidate_id=candidate["id"])
+        exclude_ids.add(candidate["id"])
+    return None
+
+
 def _resolve_slot_image(candidate: dict, slot: str, policy: dict, client) -> str | None:
     """Post image for one slot: static override, else OpenRouter generation.
 
@@ -798,124 +833,111 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
 
     client = OpenRouterClient()
 
-    # Competitor dedup (issue #40): skip candidates already covered by competitors.
-    # Prod only — stage re-publishes existing prod sources for shadow comparison,
-    # and skipping a stage post would lose a paired data point for the experiment.
-    # Up to 3 attempts — each duplicate hit is added to exclude_ids so the next
-    # pick skips it. Degrades to 'unique' (no block) on any infra failure, so a
-    # downed embeddings service never blocks publishing.
-    exclude_ids: set[int] = set()
-    candidate = None
-    if pipeline_env == "prod":
-        for _dedup_attempt in range(3):
-            candidate = select_candidate(slot, policy, pipeline_env=pipeline_env, exclude_ids=exclude_ids or None)
-            if candidate is None:
-                break
-            dedup_result = "unique"
-            try:
-                from aibp.self_learning.competitor_dedup import check_duplicate
-                dedup_result = check_duplicate(
-                    candidate.get("title", ""),
-                    candidate.get("text", ""),
-                    policy,
-                )
-            except Exception as e:
-                log.warning("competitor_dedup_failed", error=str(e))
-            if dedup_result != "duplicate":
-                break
-            log.info("candidate_skipped_competitor_dup", candidate_id=candidate["id"])
-            exclude_ids.add(candidate["id"])
-        else:
-            candidate = None
-    else:
-        candidate = select_candidate(slot, policy, pipeline_env=pipeline_env)
-
-    if candidate is None:
-        log.info("no_candidate_available", slot=slot, pipeline_env=pipeline_env)
-        return 0
-
-    log.info(
-        "generating",
-        slot=slot,
-        pipeline_env=pipeline_env,
-        candidate_id=candidate["id"],
-        title=candidate["title"][:60] if candidate["title"] else "",
-    )
-
-    # Generate with retry (max 3 attempts if a check fails). Each retry is
-    # "informed": the prior attempt's feedback goes into the prompt (issue #30)
-    # instead of re-rolling the same prompt blind. Two checks run in order:
-    # the deterministic regex gate (safety layer), then the LLM editor
-    # (quality layer — reads the post as one whole text). Editor problems feed
-    # the retry prompt the same way gate failures do.
     editor_cfg = policy.get("llm_editor") or {}
     editor_enabled = editor_cfg.get("enabled", True)
-
-    post = None
-    previous_failures: list[dict] | None = None
     recent_openings = fetch_recent_openings() if slot == "morning" else []
-    for attempt in range(3):
-        post = generate_post(candidate, slot, policy, client,
-                             previous_failures=previous_failures, attempt=attempt,
-                             recent_openings=recent_openings)
-        if post is None:
-            # LLM-level failure (transient API error, empty completion) — worth
-            # another attempt, unlike a permanent config problem. Bail out only
-            # when every attempt failed.
-            if attempt == 2:
-                return 1
-            continue
 
-        validation = validate_post(
-            post=post,
-            expected_url=candidate["url"],
+    # Candidate fallback (2026-07-16 incident): one stubborn source must not
+    # leave the slot empty. If a candidate burns all 3 generation attempts on
+    # quality failures, it is rejected and the NEXT candidate is tried — up to
+    # 3 candidates per run.
+    exclude_ids: set[int] = set()
+    post = None
+    candidate = None
+    accepted = False
+    for candidate_round in range(3):
+        candidate = _select_with_dedup(slot, policy, pipeline_env, exclude_ids)
+        if candidate is None:
+            log.info("no_candidate_available", slot=slot, pipeline_env=pipeline_env,
+                     candidate_round=candidate_round + 1)
+            # Nothing to post on round 0 is a legitimate empty pool (rc=0);
+            # running dry AFTER failed candidates is a failure signal (rc=1).
+            return 0 if candidate_round == 0 else 1
+
+        log.info(
+            "generating",
             slot=slot,
-            extra_gates=policy.get("regex_gates", []),
+            pipeline_env=pipeline_env,
+            candidate_id=candidate["id"],
+            title=candidate["title"][:60] if candidate["title"] else "",
         )
 
-        if validation["ok"]:
-            review = {"ok": True, "problems": [], "skipped": True}
-            if editor_enabled:
-                from aibp.generation.llm_editor import editor_failures, review_post
-                review = review_post(
-                    post, slot, client,
-                    source_title=candidate.get("title", ""),
-                    source_excerpt=candidate.get("text") or "",
-                    model=editor_cfg.get("model"),
-                )
-            if review["ok"]:
-                log.info(
-                    "quality_gate_passed",
-                    attempt=attempt + 1, slot=slot, pipeline_env=pipeline_env,
-                    llm_editor="skipped" if review.get("skipped") else "approved",
-                )
-                break
-            previous_failures = editor_failures(review)
-            log.warning(
-                "llm_editor_rejected",
-                attempt=attempt + 1,
-                pipeline_env=pipeline_env,
-                problems=[p["key"] for p in review["problems"]],
-                informed_retry=attempt < 2,
+        # Generate with retry (max 3 attempts if a check fails). Each retry is
+        # "informed": the prior attempt's feedback goes into the prompt (issue
+        # #30) instead of re-rolling the same prompt blind. Two checks run in
+        # order: the deterministic regex gate (safety layer), then the LLM
+        # editor (quality layer — reads the post as one whole text). Editor
+        # problems feed the retry prompt the same way gate failures do.
+        post = None
+        previous_failures: list[dict] | None = None
+        for attempt in range(3):
+            post = generate_post(candidate, slot, policy, client,
+                                 previous_failures=previous_failures, attempt=attempt,
+                                 recent_openings=recent_openings)
+            if post is None:
+                # LLM-level failure (transient API error, empty completion) —
+                # worth another attempt; move on when every attempt failed.
+                continue
+
+            validation = validate_post(
+                post=post,
+                expected_url=candidate["url"],
+                slot=slot,
+                extra_gates=policy.get("regex_gates", []),
             )
-        else:
-            previous_failures = extract_gate_failures(validation)
-            log.warning(
-                "quality_gate_failed",
-                attempt=attempt + 1,
-                pipeline_env=pipeline_env,
-                hard_fails=validation["hard_fail_keys"],
-                informed_retry=attempt < 2,
-            )
-        if attempt == 2:
-            log.error("quality_gate_failed_3_attempts", candidate=candidate["id"])
-            if pipeline_env == "prod":
-                execute(
-                    "UPDATE feed_items SET status = 'rejected' WHERE id = %s",
-                    (candidate["id"],),
+
+            if validation["ok"]:
+                review = {"ok": True, "problems": [], "skipped": True}
+                if editor_enabled:
+                    from aibp.generation.llm_editor import editor_failures, review_post
+                    review = review_post(
+                        post, slot, client,
+                        source_title=candidate.get("title", ""),
+                        source_excerpt=candidate.get("text") or "",
+                        model=editor_cfg.get("model"),
+                    )
+                if review["ok"]:
+                    log.info(
+                        "quality_gate_passed",
+                        attempt=attempt + 1, slot=slot, pipeline_env=pipeline_env,
+                        llm_editor="skipped" if review.get("skipped") else "approved",
+                    )
+                    accepted = True
+                    break
+                previous_failures = editor_failures(review)
+                log.warning(
+                    "llm_editor_rejected",
+                    attempt=attempt + 1,
+                    pipeline_env=pipeline_env,
+                    problems=[p["key"] for p in review["problems"]],
+                    informed_retry=attempt < 2,
                 )
-            return 1
-    else:
+            else:
+                previous_failures = extract_gate_failures(validation)
+                log.warning(
+                    "quality_gate_failed",
+                    attempt=attempt + 1,
+                    pipeline_env=pipeline_env,
+                    hard_fails=validation["hard_fail_keys"],
+                    informed_retry=attempt < 2,
+                )
+
+        if accepted:
+            break
+
+        # This candidate could not produce a passing post — reject and move on.
+        log.error("quality_gate_failed_3_attempts", candidate=candidate["id"],
+                  candidate_round=candidate_round + 1)
+        if pipeline_env == "prod":
+            execute(
+                "UPDATE feed_items SET status = 'rejected' WHERE id = %s",
+                (candidate["id"],),
+            )
+        exclude_ids.add(candidate["id"])
+
+    if not accepted:
+        log.error("all_candidates_failed", slot=slot, pipeline_env=pipeline_env,
+                  tried=len(exclude_ids))
         return 1
 
     if post is None:

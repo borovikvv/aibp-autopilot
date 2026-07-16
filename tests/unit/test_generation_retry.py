@@ -27,6 +27,15 @@ _FORBIDDEN_POST = (
     '<a href="https://example.com/a">Источник</a>'
 )
 
+# Mirrors the passing fixture in test_quality_gate.py, pointed at _CANDIDATE's url.
+_CLEAN_POST = (
+    "<b>AI-помощник нужно измерять по принятому результату</b>\n\n"
+    "Первые недели внутреннего помощника часто выглядят успешными: запросов много, сотрудники пробуют сценарии.\n\n"
+    "Но активность ещё не показывает пользу. Один человек закрывает рутинную сверку, другой гоняет дорогую модель ради черновика.\n\n"
+    "Стоимость обработанной заявки — единственная метрика, которая отделяет пилот от хобби.\n\n"
+    '<a href="https://example.com/a">Источник</a>'
+)
+
 
 # ═══════════════════════════════════════════════════════════════════
 # extract_gate_failures
@@ -104,7 +113,16 @@ def test_retry_loop_feeds_failure_into_second_prompt(monkeypatch):
             return _FORBIDDEN_POST  # always fails → 3 informed attempts
 
     monkeypatch.setattr(pipeline, "OpenRouterClient", FakeClient)
-    monkeypatch.setattr(pipeline, "select_candidate", lambda *a, **k: dict(_CANDIDATE))
+
+    def fake_select(*a, **k):
+        # Honour exclude_ids like the real selection: after the candidate is
+        # rejected, the pool is empty — otherwise the fallback loop would
+        # legitimately try 3 candidates × 3 attempts.
+        if k.get("exclude_ids") and _CANDIDATE["id"] in k["exclude_ids"]:
+            return None
+        return dict(_CANDIDATE)
+
+    monkeypatch.setattr(pipeline, "select_candidate", fake_select)
     # keep the test day-independent: on the weekly_case weekday the morning
     # slot would be skipped entirely and the test would fail spuriously
     monkeypatch.setattr(pipeline, "_should_skip_for_weekly_case", lambda *a, **k: False)
@@ -113,10 +131,51 @@ def test_retry_loop_feeds_failure_into_second_prompt(monkeypatch):
     rc = pipeline.run(slot="morning", pipeline_env="stage")
 
     assert rc == 1                                     # never cleared the gate
-    assert len(prompts) == 3                           # 3 attempts
+    assert len(prompts) == 3                           # 3 attempts for the one candidate
     assert "Предыдущая попытка отклонена" not in prompts[0]
     assert "Предыдущая попытка отклонена" in prompts[1]
     assert "владельц" in prompts[1]                    # the failing term is named
+
+
+def test_failed_candidate_falls_back_to_next(monkeypatch):
+    """A candidate that burns 3 attempts must not empty the slot — the next
+    candidate is tried (2026-07-16 incident)."""
+    calls = {"n": 0}
+
+    class FakeClient:
+        default_model = "x"
+
+        def __init__(self, *a, **k):
+            pass
+
+        def chat(self, messages, temperature=0.4, max_tokens=2000):
+            calls["n"] += 1
+            # candidate 1 always fails the gate; candidate 2 passes at once
+            return _FORBIDDEN_POST if calls["n"] <= 3 else _CLEAN_POST
+
+        def chat_json(self, *a, **k):
+            return {"ok": True, "problems": []}
+
+    good = dict(_CANDIDATE, id=_CANDIDATE["id"] + 1)
+
+    def fake_select(*a, **k):
+        excluded = k.get("exclude_ids") or set()
+        if _CANDIDATE["id"] not in excluded:
+            return dict(_CANDIDATE)
+        if good["id"] not in excluded:
+            return dict(good)
+        return None
+
+    monkeypatch.setattr(pipeline, "OpenRouterClient", FakeClient)
+    monkeypatch.setattr(pipeline, "select_candidate", fake_select)
+    monkeypatch.setattr(pipeline, "_should_skip_for_weekly_case", lambda *a, **k: False)
+    monkeypatch.setattr(pipeline, "execute", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "_resolve_slot_image", lambda *a, **k: None)
+
+    rc = pipeline.run(slot="morning", pipeline_env="stage")
+
+    assert rc == 0                    # slot filled by the fallback candidate
+    assert calls["n"] == 4            # 3 failed attempts + 1 clean pass
 
 
 # ═══════════════════════════════════════════════════════════════════
