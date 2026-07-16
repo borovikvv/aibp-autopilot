@@ -130,3 +130,22 @@ def test_promotional_ctas_are_rejected(phrase):
 ])
 def test_neutral_ctas_pass(phrase):
     assert validate_cta_text(phrase)["ok"] is True
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Anti-repeat: previous post's CTA is excluded (2026-07-16)
+# ═══════════════════════════════════════════════════════════════════
+
+def test_select_cta_excludes_previous_variant():
+    from aibp.generation.pipeline import select_cta_variant
+    policy = {"cta_variants": {"save_forward": 1.0, "comment_prompt": 1.0}}
+    for _ in range(20):
+        assert select_cta_variant(policy, slot="morning",
+                                  exclude="save_forward") == "comment_prompt"
+
+
+def test_select_cta_keeps_sole_variant_despite_exclude():
+    from aibp.generation.pipeline import select_cta_variant
+    policy = {"cta_variants": {"save_forward": 1.0}}
+    assert select_cta_variant(policy, slot="morning",
+                              exclude="save_forward") == "save_forward"

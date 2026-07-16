@@ -560,10 +560,33 @@ EVENING_POLL = {
 }
 
 
-def select_cta_variant(policy: dict, slot: str | None = None) -> str | None:
+def fetch_last_cta_variant() -> str | None:
+    """CTA variant of the most recent published prod post (None on failure)."""
+    try:
+        rows = fetch_all(
+            """
+            SELECT summary->>'cta_variant' AS v
+            FROM feed_items
+            WHERE pipeline_env = 'prod' AND posted_at IS NOT NULL
+              AND summary->>'cta_variant' IS NOT NULL
+            ORDER BY posted_at DESC
+            LIMIT 1
+            """
+        )
+        return rows[0]["v"] if rows else None
+    except Exception as e:
+        log.warning("last_cta_lookup_failed", error=str(e))
+        return None
+
+
+def select_cta_variant(policy: dict, slot: str | None = None,
+                       exclude: str | None = None) -> str | None:
     """Sample one CTA variant according to policy weights. None disables CTA.
 
     The 'poll' variant (issue #33) is eligible only for the evening slot.
+    exclude: the previous post's variant — dropped from the pool when at
+    least one other variant remains, so identical CTAs never run
+    back-to-back (selection is otherwise memoryless random).
     """
     weights = policy.get("cta_variants") or {}
     eligible = set(CTA_TEMPLATES)
@@ -573,6 +596,8 @@ def select_cta_variant(policy: dict, slot: str | None = None) -> str | None:
         k: float(v) for k, v in weights.items()
         if k in eligible and isinstance(v, (int, float)) and v > 0
     }
+    if exclude in valid and len(valid) > 1:
+        valid = {k: v for k, v in valid.items() if k != exclude}
     if not valid:
         return None
     import random
@@ -959,7 +984,10 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     poll = None
     offer_slug = None
     if pipeline_env == "prod":
-        candidate_variant = select_cta_variant(policy, slot=slot)
+        # Anti-repeat (2026-07-16): the previous post's CTA is excluded so the
+        # same call-to-action never appears in two consecutive posts.
+        last_cta = fetch_last_cta_variant()
+        candidate_variant = select_cta_variant(policy, slot=slot, exclude=last_cta)
 
         # affiliate_link now means a real offer from the catalog (issue #38).
         # No attachable offer → resample among the remaining variants.
@@ -973,7 +1001,8 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
             else:
                 fallback = {k: v for k, v in (policy.get("cta_variants") or {}).items()
                             if k != AFFILIATE_VARIANT}
-                candidate_variant = select_cta_variant({"cta_variants": fallback}, slot=slot)
+                candidate_variant = select_cta_variant({"cta_variants": fallback},
+                                                       slot=slot, exclude=last_cta)
                 log.info("offer_unavailable_cta_fallback",
                          fallback_variant=candidate_variant, candidate_id=candidate["id"])
 
