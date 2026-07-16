@@ -167,6 +167,18 @@ cronjob(
     enabled_toolsets=['terminal'],
 )
 
+# Weekly Digest Generation — Sundays 18:00 MSK (15:00 UTC); publisher posts at 19:00 MSK.
+# (Was missing from this bootstrap until 2026-07-16 — the old system had it.)
+cronjob(
+    action='create',
+    name='AIBP — Weekly Digest Generation',
+    schedule='0 15 * * 0',
+    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot weekly_digest 2>&1',
+    workdir='/root/aibp-autopilot',
+    deliver='origin',
+    enabled_toolsets=['terminal'],
+)
+
 # Stage Morning Generation (shadow test) — 09:30 MSK (06:30 UTC)
 # Generates post for TEST channel using policy.stage.yaml (if exists)
 cronjob(
