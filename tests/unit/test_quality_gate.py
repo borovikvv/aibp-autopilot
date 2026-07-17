@@ -9,7 +9,9 @@ from aibp.generation.quality_gate import (
     CLICHE_RE,
     FORBIDDEN_RE,
     METRIC_PRESENCE_RE,
+    MIXED_SCRIPT_RE,
     SOURCE_FRAMING_RE,
+    validate_cta_text,
     validate_post,
 )
 
@@ -251,3 +253,74 @@ def test_multiword_bold_headline_is_not_a_label():
     result = validate_post(post, expected_url="https://example.com/article", slot="morning")
     assert result["verdicts"]["section_labels"]["status"] == "pass"
     assert result["ok"] is True
+
+
+def test_mixed_script_re_catches_transliteration_bleed():
+    """A word gluing Latin and Cyrillic together must be flagged."""
+    for word in (
+        "juridически",   # Latin "jur" + Cyrillic "идически"
+        "юридicheski",   # Cyrillic head + Latin tail
+        "сbербанк",      # Latin "c" homoglyph inside Cyrillic
+        "GPТ",           # Cyrillic "Т" homoglyph inside Latin
+    ):
+        assert MIXED_SCRIPT_RE.search(word) is not None, word
+
+
+def test_mixed_script_re_allows_clean_tokens():
+    """Hyphenated compounds and pure-script tokens must pass — a hyphen,
+    space, or digit breaks the letter-run so the scripts stay separate."""
+    for phrase in (
+        "AI-помощник разбирает заявки",
+        "ML-модель и IT-отдел",
+        "чистый русский текст без латиницы",
+        "pure english RAG pipeline",
+        "GPT-4 и Claude 5 обрабатывают 30 заявок",
+        "рост в 2х по выручке",  # digit breaks the run
+    ):
+        assert MIXED_SCRIPT_RE.search(phrase) is None, phrase
+
+
+def test_mixed_script_hard_fails_in_post():
+    post = (
+        "<b>Заголовок про заявки</b>\n\n"
+        "Модель обрабатывает заявки и juridически проверяет договоры.\n\n"
+        "Второй абзац развивает мысль про процесс.\n\n"
+        "Третий абзац про границу применимости за 30 минут.\n\n"
+        "Четвёртый абзац с выводом.\n\n"
+        '<a href="https://example.com/article">Источник</a>'
+    )
+    result = validate_post(post, expected_url="https://example.com/article", slot="evening")
+    assert result["ok"] is False
+    assert "mixed_script" in result["hard_fail_keys"]
+    assert result["verdicts"]["mixed_script"]["hits"][0]["text"] == "juridически"
+
+
+def test_mixed_script_hard_fails_across_all_slots():
+    post = (
+        "<b>Заголовок</b>\n\n"
+        "Текст со словом сbербанк внутри абзаца.\n\n"
+        "Второй абзац.\n\n"
+        "Третий абзац про метрику 30 заявок.\n\n"
+        "Четвёртый абзац.\n\n"
+        '<a href="https://example.com/article">Источник</a>'
+    )
+    for slot in ("morning", "evening", "weekly_case"):
+        result = validate_post(post, expected_url="https://example.com/article", slot=slot)
+        assert "mixed_script" in result["hard_fail_keys"], slot
+
+
+def test_clean_post_passes_mixed_script_gate():
+    post = (
+        "<b>AI-помощник нужно измерять по принятому результату</b>\n\n"
+        "Первые недели помощник обрабатывает 30 заявок в день, GPT-4 гоняет черновики.\n\n"
+        "Но активность ещё не показывает пользу для процесса.\n\n"
+        "Стоимость обработанной заявки отделяет пилот от хобби.\n\n"
+        '<a href="https://example.com/article">Источник</a>'
+    )
+    result = validate_post(post, expected_url="https://example.com/article", slot="morning")
+    assert result["verdicts"]["mixed_script"]["status"] == "pass"
+
+
+def test_cta_mixed_script_fails():
+    assert validate_cta_text("juridически чистый совет")["ok"] is False
+    assert validate_cta_text("Разбор внутри — 5 минут чтения")["ok"] is True

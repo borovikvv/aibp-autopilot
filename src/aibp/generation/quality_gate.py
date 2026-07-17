@@ -110,6 +110,23 @@ TECHNICAL_DENSITY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Mixed-script word — a single contiguous letter-run that glues Latin and
+# Cyrillic together ("juridически" = Latin "jur" + Cyrillic "идически"). This
+# is transliteration bleed / homoglyph corruption from the LLM and must never
+# reach the channel. Hard fail in every slot.
+#
+# The run is LETTERS ONLY: a hyphen, space, or digit breaks it, so legitimate
+# compounds ("AI-помощник", "ML-модель", "IT-отдел") and pure-Latin tokens
+# ("RAG", "GPT-4", "OpenAI") pass — their scripts sit in separate runs. A match
+# requires at least one point where a Latin letter is directly adjacent to a
+# Cyrillic one; the run is then captured greedily on both sides to report the
+# whole broken word. Cyrillic class covers А-я plus Ё/ё (outside that range).
+_LAT = r"A-Za-z"
+_CYR = r"А-Яа-яЁё"
+MIXED_SCRIPT_RE = re.compile(
+    rf"[{_LAT}{_CYR}]*(?:[{_LAT}][{_CYR}]|[{_CYR}][{_LAT}])[{_LAT}{_CYR}]*"
+)
+
 # Generic final moral — banned "moral of the story" endings
 GENERIC_FINAL_MORAL_RE = re.compile(
     r"^(В\s+итоге|Итог|Главн(ый|ое)\s+вывод|Граница\s+получается|"
@@ -174,9 +191,14 @@ def validate_cta_text(text: str) -> dict[str, Any]:
     CTA text is appended AFTER validate_post, so it would otherwise bypass the
     editorial gate. Returns {"ok": bool, "status": ..., "hits": [...]}.
     """
-    hits = _hits(PROMOTIONAL_CTA_RE, _plain(text))
+    plain = _plain(text)
+    hits = _hits(PROMOTIONAL_CTA_RE, plain)
+    note = "promotional CTA phrase" if hits else None
+    if not hits:
+        hits = _hits(MIXED_SCRIPT_RE, plain)
+        note = "word mixes Latin and Cyrillic letters" if hits else None
     status = "fail" if hits else "pass"
-    return {"ok": not hits, **_verdict(status, hits, note="promotional CTA phrase" if hits else None)}
+    return {"ok": not hits, **_verdict(status, hits, note=note)}
 
 
 def validate_post(
@@ -223,6 +245,13 @@ def validate_post(
 
     cliche_hits = _hits(CLICHE_RE, full_plain_no_urls)
     verdicts["ai_template_phrases"] = _verdict("fail" if cliche_hits else "pass", cliche_hits)
+
+    mixed_hits = _hits(MIXED_SCRIPT_RE, full_plain_no_urls)
+    verdicts["mixed_script"] = _verdict(
+        "fail" if mixed_hits else "pass",
+        mixed_hits,
+        "word mixes Latin and Cyrillic letters (transliteration bleed)" if mixed_hits else None,
+    )
 
     source_hits = _hits(SOURCE_FRAMING_RE, body_plain)
     verdicts["source_framing"] = _verdict("fail" if source_hits else "pass", source_hits)
@@ -325,7 +354,7 @@ def validate_post(
     # Hard fail keys
     hard_keys = [
         "source_link", "forbidden_terms", "ai_template_phrases",
-        "source_framing", "opening", "technical_density",
+        "mixed_script", "source_framing", "opening", "technical_density",
     ]
     if "section_labels" in verdicts:
         hard_keys.append("section_labels")
