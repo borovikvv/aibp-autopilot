@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Agent OS — контракт
-Прочитай и выполняй агентский контракт (`contract_version: 1.0`): локально `~/my-wiki/topics/agent-contract.md`, удалённо `https://wiki.borovikvv.ru/topics/agent-contract`. Контекст проекта — в wiki: `projects/ai-business-pulse/`; значимые результаты сессии сохраняй по контракту в `raw/new/`.
+Прочитай и выполняй агентский контракт (`contract_version: 1.1`): локально `~/my-wiki/topics/agent-contract.md`, удалённо `https://wiki.borovikvv.ru/topics/agent-contract`. Контекст проекта — в wiki: `projects/ai-business-pulse/`; значимые результаты сессии сохраняй по контракту в `raw/new/`.
 
 ## Repository location
 
