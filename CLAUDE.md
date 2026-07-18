@@ -5,6 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Agent OS — контракт
 Прочитай и выполняй агентский контракт (`contract_version: 1.1`): локально `~/my-wiki/topics/agent-contract.md`, удалённо `https://wiki.borovikvv.ru/topics/agent-contract`. Контекст проекта — в wiki: `projects/ai-business-pulse/`; значимые результаты сессии сохраняй по контракту в `raw/new/`.
 
+## Принципы работы с кодом
+4 принципа Карпаты (контракт §4, детали — `topics/karpathy-principles`): думай перед кодом, минимум кода, хирургические правки, верифицируй результат.
+
 ## Repository location
 
 The git repo and all code live in `aibp-autopilot/` (on this Mac: `/Users/borovikvyacheslav/Projects/active/aibp-autopilot`). **All `make`/`python3`/`git` commands must run from inside `aibp-autopilot/`.** In production the same tree lives at `/root/aibp-autopilot`.
