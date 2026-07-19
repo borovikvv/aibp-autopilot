@@ -206,14 +206,18 @@ def validate_post(
     expected_url: str | None = None,
     slot: str = "morning",
     extra_gates: list[dict] | None = None,
+    digest_urls: list[str] | None = None,
 ) -> dict[str, Any]:
     """Validate final Telegram HTML post_draft.
 
     Args:
         post: HTML post text
         expected_url: source URL that must appear in the final link
-        slot: morning | evening | weekly_digest
+        slot: morning | evening | weekly_digest | weekly_case
         extra_gates: additional regex gates from policy.yaml (auto-populated)
+        digest_urls: for weekly_digest — the exact set of source URLs the post
+            must link (issue #45). The final link block must contain every one
+            of them and no foreign links. Ignored for other slots.
 
     Returns:
         {"ok": bool, "slot": str, "verdicts": {...}, "hard_fail_keys": [...]}
@@ -227,9 +231,22 @@ def validate_post(
     # Source link check
     source_errors: list[dict[str, Any]] = []
     if slot == "weekly_digest":
-        visible_hrefs = HREF_RE.findall(post)
-        if visible_hrefs:
-            source_errors.append({"text": "weekly_digest must have zero visible links"})
+        # Multi-source digest (issue #45): the post ends with a link block —
+        # one line per weekly source. It must link EVERY provided URL exactly
+        # once and carry NO foreign links. Without an expected set (e.g. a bare
+        # validation call) fall back to "there must be a link block".
+        visible_urls = [u for u, _ in HREF_RE.findall(post)]
+        if digest_urls:
+            required = set(digest_urls)
+            present = set(visible_urls)
+            for url in sorted(required - present):
+                source_errors.append({"text": f"missing_source_link: {url}"})
+            for url in sorted(present - required):
+                source_errors.append({"text": f"foreign_link: {url}"})
+            for url in sorted({u for u in required if visible_urls.count(u) > 1}):
+                source_errors.append({"text": f"duplicate_source_link: {url}"})
+        elif not visible_urls:
+            source_errors.append({"text": "weekly_digest must have a source link block"})
     else:
         if len(hrefs) != 1:
             source_errors.append({"text": f"source_link_count={len(hrefs)} (must be 1)"})
@@ -326,11 +343,14 @@ def validate_post(
             note=None if has_metric else "weekly_case requires at least one numeric measurement",
         )
     elif slot == "weekly_digest":
-        bullet_lines = re.findall(r"(?m)^\s*[•-]\s+(.+)$", post)
-        if len(bullet_lines) < 4:
+        # A digest synthesises several weekly sources (issue #45): the final
+        # link block should list at least 3. Warn-only — the hard link-block
+        # membership check lives in the source_link verdict above.
+        link_count = len(HREF_RE.findall(post))
+        if link_count < 3:
             verdicts["weekly_structure"] = _verdict(
                 "warn",
-                note=f"bullets={len(bullet_lines)} (min 4); {length_note}",
+                note=f"source_links={link_count} (min 3); {length_note}",
             )
         else:
             verdicts["weekly_structure"] = _verdict("pass", note=length_note)
