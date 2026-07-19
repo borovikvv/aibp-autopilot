@@ -50,6 +50,7 @@ ignore = ["N802", "B905"]
 # Pipeline files contain long Jinja2/LD prompts — line length is intentional
 "src/aibp/enrichment/pipeline.py" = ["E501"]
 "src/aibp/generation/pipeline.py" = ["E501"]
+"src/aibp/generation/llm_editor.py" = ["E501"]
 "src/aibp/self_learning/pattern_miner.py" = ["E501"]
 
 [tool.mypy]
