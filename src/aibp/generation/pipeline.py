@@ -206,7 +206,8 @@ together. Develop that single thread in connected prose. This is NOT
 
 ## Materials of the week
 {% for m in materials %}
-[{{ loop.index }}] TITLE: {{ m.title }}
+[{{ loop.index }}] SOURCE: {{ m.source }}
+    TITLE: {{ m.title }}
     URL: {{ m.url }}
     EXCERPT: {{ m.excerpt }}
 {% endfor %}
@@ -214,12 +215,23 @@ together. Develop that single thread in connected prose. This is NOT
 ## Structure
 1. <b>Заголовок</b> — the weekly signal in one line.
 2. {{ paragraphs_min }}-{{ paragraphs_max }} paragraphs of connected prose developing that signal, drawing on the materials without recapping them one by one.
-3. A LINK BLOCK at the very end: one line per material, each exactly
-   `<a href="URL">короткий заголовок</a>`. Use EVERY URL listed below, each
-   exactly once, in any order, and NO other links.
+3. A LINK BLOCK at the very end, in EXACTLY this shape — a bold header line,
+   then ONE <blockquote> holding every source, one per line:
 
-Link block URLs (use all of these, verbatim, and nothing else):
-{% for m in materials %}- {{ m.url }}
+<b>Что читать</b>
+<blockquote><a href="URL">Издание — суть материала</a>
+<a href="URL">Издание — суть материала</a></blockquote>
+
+   Each line is a single link whose visible text follows ONE pattern:
+   the source name exactly as given above, an em dash, then a short noun
+   phrase in lowercase saying what the material is about. No verbs, no
+   sentence, no capital letter after the dash — every line must read the
+   same shape, e.g. "Ведомости — закон о фундаментальных моделях",
+   "FT — неявное знание уходит вместе с людьми". Keep each line under
+   ~70 characters.
+
+Link block URLs (use all of these, verbatim, each exactly once, and nothing else):
+{% for m in materials %}- {{ m.source }} → {{ m.url }}
 {% endfor %}
 
 ## Hard editorial rules
@@ -231,6 +243,7 @@ Link block URLs (use all of these, verbatim, and nothing else):
 6. Length: {{ target_chars_min }}-{{ target_chars_max }} chars (link block excluded from the feel of length).
 7. Max bold: {{ max_bold }}.
 8. Do NOT add a single "Источник" link — the link block replaces it.
+9. Nothing after the link block: no hashtag, no sign-off, no extra line.
 {% if previous_failures %}
 ## Предыдущая попытка отклонена
 Исправь ТОЛЬКО перечисленное, не ломая остального:
@@ -631,6 +644,9 @@ def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterCl
             {
                 "title": m.get("title", ""),
                 "url": m.get("url", ""),
+                # The link-block lines read "Издание — суть", so the model needs
+                # a human source name; source_domain is the fallback.
+                "source": m.get("source") or m.get("source_domain") or "",
                 "excerpt": (m.get("text") or "")[:1200],
             }
             for m in (digest_materials or [])

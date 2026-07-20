@@ -24,15 +24,18 @@ DIGEST_URLS = [
 
 
 def _digest_post(urls, headline="<b>Сигнал недели</b>"):
-    """A well-formed digest: headline, prose, then a link block."""
-    block = "\n".join(f'<a href="{u}">Материал {i}</a>' for i, u in enumerate(urls, 1))
+    """A well-formed digest in the production shape: headline, prose, then a
+    bold header + one <blockquote> holding "Издание — суть" links."""
+    lines = "\n".join(
+        f'<a href="{u}">Издание {i} — суть материала</a>' for i, u in enumerate(urls, 1)
+    )
     return (
         f"{headline}\n\n"
         "На этой неделе несколько независимых сдвигов складываются в одну картину: "
         "инструменты дешевеют, а узкое место смещается в проверку результата.\n\n"
         "Что это меняет в работе — можно перестроить рутину так, чтобы человек "
         "тратил время на решение, а не на сверку.\n\n"
-        f"{block}"
+        f"<b>Что читать</b>\n<blockquote>{lines}</blockquote>"
     )
 
 
@@ -78,6 +81,38 @@ def test_digest_without_expected_set_requires_a_block():
     result = validate_post(no_links, slot="weekly_digest")
     assert result["ok"] is False
     assert "source_link" in result["hard_fail_keys"]
+
+
+def test_digest_blockquote_block_passes_gate():
+    """The production link-block shape (bold header + <blockquote> wrapper)
+    must not confuse the URL-membership check or any core gate."""
+    post = _digest_post(DIGEST_URLS)
+    assert "<blockquote>" in post and "<b>Что читать</b>" in post
+    result = validate_post(post, slot="weekly_digest", digest_urls=DIGEST_URLS)
+    assert result["ok"] is True
+    assert result["verdicts"]["weekly_structure"]["status"] == "pass"
+
+
+def test_digest_links_inside_blockquote_are_trackable():
+    """wrap_tracked_links must still rewrite every link inside the blockquote —
+    its regex is stricter (`<a href="X">`) than the gate's."""
+    post = _digest_post(DIGEST_URLS)
+    seen = []
+
+    def fake_register(feed_item_id, url, offer_id=None):
+        seen.append(url)
+        return f"s{len(seen)}"
+
+    with patch.object(pipeline, "get_settings") as gs, \
+         patch("aibp.tracking.redirect_service.register_link", fake_register), \
+         patch("aibp.tracking.redirect_service.short_url", lambda s: f"https://t.co/{s}"):
+        gs.return_value.tracking_base_url = "https://t.co"
+        wrapped = pipeline.wrap_tracked_links(post, 999)
+
+    assert seen == DIGEST_URLS  # every source link was registered, in order
+    for u in DIGEST_URLS:
+        assert f'href="{u}"' not in wrapped  # all replaced by short redirects
+    assert "<blockquote>" in wrapped  # decoration survived the rewrite
 
 
 def test_digest_core_gates_still_apply():
