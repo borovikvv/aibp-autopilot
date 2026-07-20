@@ -78,7 +78,7 @@ cta_variants:
 telegram:
   # Attach a tracked "Открыть источник →" inline button to prod posts
   # (in addition to the in-text source link). Needs TRACKING_BASE_URL.
-  source_button: false
+  source_button: true
 
 # ─── Weekly case slot (issue #40) ──────────────────────────────────
 # One weekday/week the morning slot is replaced by a deep "case study"
