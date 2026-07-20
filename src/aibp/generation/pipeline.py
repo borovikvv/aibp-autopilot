@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import structlog
 from jinja2 import Template
 
-from aibp.db.connection import execute, fetch_all
+from aibp.db.connection import execute, execute_returning, fetch_all
 from aibp.enrichment.llm_client import OpenRouterClient
 from aibp.generation.quality_gate import validate_cta_text, validate_post
 from aibp.utils.config import get_settings, load_policy
@@ -183,6 +183,61 @@ End with: <a href="{{ url }}">Источник</a>
 - No AI clichés. No generic moral endings.
 - Length: {{ target_chars_min }}-{{ target_chars_max }} chars, {{ paragraphs_min }}-{{ paragraphs_max }} paragraphs.
 - Max bold: {{ max_bold }}.
+
+Return ONLY the post HTML. No explanation, no markdown fences.
+""")
+
+
+WEEKLY_DIGEST_PROMPT = Template("""You are the editor of @AI_Business_Pulse — a Russian-language Telegram channel about practical AI in business workflows.
+
+Write ONE Russian Telegram post — the WEEKLY DIGEST for the weekly_digest slot.
+
+Readers are mostly in Russia and CIS: the digest matters to them only through
+what transfers to their work — tools they can access, a process pattern, a
+number as a benchmark. A foreign-jurisdiction item earns its place only through
+that consequence.
+
+## The task — synthesis, not a news list
+
+Read the {{ materials|length }} materials of the week below and surface ONE
+connecting "signal of the week": a shift, tension, or pattern that ties them
+together. Develop that single thread in connected prose. This is NOT
+{{ materials|length }} separate summaries stacked together.
+
+## Materials of the week
+{% for m in materials %}
+[{{ loop.index }}] TITLE: {{ m.title }}
+    URL: {{ m.url }}
+    EXCERPT: {{ m.excerpt }}
+{% endfor %}
+
+## Structure
+1. <b>Заголовок</b> — the weekly signal in one line.
+2. {{ paragraphs_min }}-{{ paragraphs_max }} paragraphs of connected prose developing that signal, drawing on the materials without recapping them one by one.
+3. A LINK BLOCK at the very end: one line per material, each exactly
+   `<a href="URL">короткий заголовок</a>`. Use EVERY URL listed below, each
+   exactly once, in any order, and NO other links.
+
+Link block URLs (use all of these, verbatim, and nothing else):
+{% for m in materials %}- {{ m.url }}
+{% endfor %}
+
+## Hard editorial rules
+1. Синтез, не пересказ: one connecting thesis, not per-item recaps.
+2. No source-centered attribution in the prose body ("в материале N", "по данным X", "как пишет Y"). Attribution lives in the link block only.
+3. No forbidden terms: SMB, CEO, "для бизнеса", "владельцы бизнеса".
+4. No AI clichés: "важно отметить", "в современном мире", "ключевой вывод".
+5. Technical terms (RAG, token budget) allowed only with a business translation.
+6. Length: {{ target_chars_min }}-{{ target_chars_max }} chars (link block excluded from the feel of length).
+7. Max bold: {{ max_bold }}.
+8. Do NOT add a single "Источник" link — the link block replaces it.
+{% if previous_failures %}
+## Предыдущая попытка отклонена
+Исправь ТОЛЬКО перечисленное, не ломая остального:
+{% for f in previous_failures %}- {{ f.key }}{% if f.hits %}: {{ f.hits }}{% endif %}
+{% endfor %}
+{% endif %}
+## Output
 
 Return ONLY the post HTML. No explanation, no markdown fences.
 """)
@@ -385,6 +440,80 @@ def select_candidate(
     return slot_filtered[0] if slot_filtered else None
 
 
+# ── weekly_digest: multi-source selection (issue #45) ──────────────────────
+DIGEST_MIN_MATERIALS = 3
+DIGEST_MAX_MATERIALS = 5
+
+
+def select_digest_candidates(
+    policy: dict,
+    pipeline_env: str = "prod",
+    limit: int = DIGEST_MAX_MATERIALS,
+) -> list[dict]:
+    """Select the week's top materials for a weekly_digest (issue #45).
+
+    A digest is a REVIEW of the week, so unlike the single-slot selectors this
+    does NOT filter on is_used/posted_at — an item the channel already covered
+    is a legitimate part of the weekly signal. Materials are the top
+    publish-worthy items over the last 7 days by rank_score (which already
+    bakes in the audience multiplier at enrichment) times the policy's rubric
+    weight, deduped to one item per domain for source variety.
+
+    Returns [] when fewer than DIGEST_MIN_MATERIALS qualify — a thin digest is
+    worse than none; run() then reports an empty pool.
+    """
+    rubric_weights = policy.get("rubric_weights", {})
+    rows = fetch_all(
+        """
+        SELECT id, url, title, text, source, source_domain, source_lang,
+               source_published_at, summary, rank_score, relevance
+        FROM feed_items
+        WHERE source_published_at > now() - interval '7 days'
+          AND summary->'editorial'->>'publish_worthy' = 'true'
+          AND url IS NOT NULL
+        ORDER BY rank_score DESC NULLS LAST, source_published_at DESC
+        LIMIT 40
+        """
+    )
+    if not rows:
+        log.info("no_digest_candidates", pipeline_env=pipeline_env)
+        return []
+
+    bandit_multipliers: dict[str, float] = {}
+    if pipeline_env == "prod" and rubric_weights:
+        try:
+            from aibp.self_learning.bandit import sample_rubric_multipliers
+            bandit_multipliers = sample_rubric_multipliers(list(rubric_weights))
+        except Exception as e:
+            log.warning("bandit_unavailable", error=str(e))
+
+    def weighted_score(c: dict) -> float:
+        editorial = parse_summary(c.get("summary")).get("editorial", {})
+        rubric = editorial.get("strategy_rubric", "")
+        weight = rubric_weights.get(rubric, 1.0) * bandit_multipliers.get(rubric, 1.0)
+        return float(c.get("rank_score", 50)) * weight
+
+    rows.sort(key=weighted_score, reverse=True)
+
+    # One item per domain for source variety; relax if that leaves too few.
+    selected: list[dict] = []
+    seen_domains: set[str] = set()
+    for c in rows:
+        dom = c.get("source_domain") or ""
+        if dom and dom in seen_domains:
+            continue
+        seen_domains.add(dom)
+        selected.append(c)
+        if len(selected) >= limit:
+            break
+    if len(selected) < DIGEST_MIN_MATERIALS:
+        selected = rows[:limit]
+    if len(selected) < DIGEST_MIN_MATERIALS:
+        log.info("digest_pool_too_small", available=len(selected), pipeline_env=pipeline_env)
+        return []
+    return selected
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Post generation
 # ═══════════════════════════════════════════════════════════════════
@@ -457,7 +586,8 @@ def extract_gate_failures(validation: dict) -> list[dict]:
 
 def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterClient,
                   previous_failures: list[dict] | None = None, attempt: int = 0,
-                  recent_openings: list[str] | None = None) -> str | None:
+                  recent_openings: list[str] | None = None,
+                  digest_materials: list[dict] | None = None) -> str | None:
     """Generate post draft via LLM.
 
     previous_failures: gate feedback from the prior attempt, injected into the
@@ -467,6 +597,11 @@ def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterCl
 
     recent_openings: first sentences of the latest published posts, injected
     into the morning prompt so the hook doesn't repeat day to day.
+
+    digest_materials: for weekly_digest — the week's selected sources (issue
+    #45). All are passed to the model, which synthesises one signal and a
+    final link block. `candidate` is the top-ranked of these (the row the post
+    is stored on); its single URL is not the digest's source of truth.
     """
     summary = parse_summary(candidate.get("summary"))
     editorial = summary.get("editorial", {})
@@ -486,6 +621,28 @@ def generate_post(candidate: dict, slot: str, policy: dict, client: OpenRouterCl
             paragraphs_min=post_params.get("paragraphs", [4, 6])[0],
             paragraphs_max=post_params.get("paragraphs", [4, 6])[1],
             max_bold=post_params.get("max_bold", 4),
+        )
+    elif slot == "weekly_digest":
+        # Issue #45: multi-source synthesis. The model reads the week's top
+        # materials and writes one connected "signal of the week" + a final
+        # link block (one <a> per source). Single-candidate framing is gone —
+        # digest_materials carries every source.
+        materials = [
+            {
+                "title": m.get("title", ""),
+                "url": m.get("url", ""),
+                "excerpt": (m.get("text") or "")[:1200],
+            }
+            for m in (digest_materials or [])
+        ]
+        prompt = WEEKLY_DIGEST_PROMPT.render(
+            materials=materials,
+            target_chars_min=post_params.get("target_chars", [2500, 4500])[0],
+            target_chars_max=post_params.get("target_chars", [2500, 4500])[1],
+            paragraphs_min=post_params.get("paragraphs", [5, 8])[0],
+            paragraphs_max=post_params.get("paragraphs", [5, 8])[1],
+            max_bold=post_params.get("max_bold", 2),
+            previous_failures=previous_failures or [],
         )
     else:
         policy_block = POLICY_BLOCK_TEMPLATE.render(
@@ -862,6 +1019,20 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     editor_enabled = editor_cfg.get("enabled", True)
     recent_openings = fetch_recent_openings() if slot == "morning" else []
 
+    # Weekly digest (issue #45) is multi-source: select the week's top
+    # materials up front. The candidate-fallback loop below then runs a single
+    # round over this fixed set (there is no "next candidate" to swap in), and
+    # the digest URLs drive the link-block gate. digest_materials[0] is the
+    # top-ranked item — the row the finished post is stored on.
+    digest_materials: list[dict] | None = None
+    digest_urls: list[str] | None = None
+    if slot == "weekly_digest":
+        digest_materials = select_digest_candidates(policy, pipeline_env)
+        if not digest_materials:
+            log.info("no_candidate_available", slot=slot, pipeline_env=pipeline_env)
+            return 0
+        digest_urls = [m["url"] for m in digest_materials]
+
     # Candidate fallback (2026-07-16 incident): one stubborn source must not
     # leave the slot empty. If a candidate burns all 3 generation attempts on
     # quality failures, it is rejected and the NEXT candidate is tried — up to
@@ -871,7 +1042,11 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     candidate = None
     accepted = False
     for candidate_round in range(3):
-        candidate = _select_with_dedup(slot, policy, pipeline_env, exclude_ids)
+        if digest_materials is not None:
+            # Fixed source set — one round only, no reject-and-swap.
+            candidate = digest_materials[0] if candidate_round == 0 else None
+        else:
+            candidate = _select_with_dedup(slot, policy, pipeline_env, exclude_ids)
         if candidate is None:
             log.info("no_candidate_available", slot=slot, pipeline_env=pipeline_env,
                      candidate_round=candidate_round + 1)
@@ -898,7 +1073,8 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         for attempt in range(3):
             post = generate_post(candidate, slot, policy, client,
                                  previous_failures=previous_failures, attempt=attempt,
-                                 recent_openings=recent_openings)
+                                 recent_openings=recent_openings,
+                                 digest_materials=digest_materials)
             if post is None:
                 # LLM-level failure (transient API error, empty completion) —
                 # worth another attempt; move on when every attempt failed.
@@ -909,6 +1085,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 expected_url=candidate["url"],
                 slot=slot,
                 extra_gates=policy.get("regex_gates", []),
+                digest_urls=digest_urls,
             )
 
             if validation["ok"]:
@@ -953,7 +1130,9 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         # This candidate could not produce a passing post — reject and move on.
         log.error("quality_gate_failed_3_attempts", candidate=candidate["id"],
                   candidate_round=candidate_round + 1)
-        if pipeline_env == "prod":
+        # Digest sources are a fixed weekly set (and may already be published);
+        # never flip them to 'rejected'. A failed digest just yields no post.
+        if pipeline_env == "prod" and digest_materials is None:
             execute(
                 "UPDATE feed_items SET status = 'rejected' WHERE id = %s",
                 (candidate["id"],),
@@ -983,7 +1162,10 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     cta_variant = None
     poll = None
     offer_slug = None
-    if pipeline_env == "prod":
+    # weekly_digest (issue #45) ends with a curated multi-source link block;
+    # it gets no appended CTA/affiliate/poll — that would add a stray link past
+    # the gate and muddy the block.
+    if pipeline_env == "prod" and digest_materials is None:
         # Anti-repeat (2026-07-16): the previous post's CTA is excluded so the
         # same call-to-action never appears in two consecutive posts.
         last_cta = fetch_last_cta_variant()
@@ -1023,7 +1205,8 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
 
     # Tracked inline source button (issue #33): opt-in via policy.telegram.
     source_button_url = None
-    if pipeline_env == "prod" and (policy.get("telegram") or {}).get("source_button"):
+    if (pipeline_env == "prod" and digest_materials is None
+            and (policy.get("telegram") or {}).get("source_button")):
         if get_settings().tracking_base_url and candidate.get("url"):
             try:
                 from aibp.tracking.redirect_service import register_link, short_url
@@ -1104,6 +1287,67 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
             "stage_post_ready",
             source_candidate_id=candidate["id"],
             slot=slot,
+            scheduled=scheduled.isoformat(),
+        )
+    elif digest_materials is not None:
+        # Weekly digest (issue #45): a synthesized post that is NOT one source
+        # row. Several of its sources may already be published, so UPDATE-in-
+        # place would clobber them — and the publisher (posted_at IS NULL) would
+        # never see the digest. INSERT a fresh prod row instead. One digest per
+        # ISO week (dupe_key) makes a re-run idempotent. Links are wrapped after
+        # insert so click attribution lands on the digest, not a source item.
+        iso = now_msk.isocalendar()
+        dupe_key = f"digest:{iso[0]}-W{iso[1]:02d}:main"
+        primary = digest_materials[0]
+        inserted = execute_returning(
+            """
+            INSERT INTO feed_items (
+                url, url_hash, title, text, source, source_domain, source_lang,
+                source_published_at, status, category, dupe_key,
+                summary, post_draft, review_status, scheduled_at,
+                is_used, used_as, campaign_tag, need_image, image_url,
+                pipeline_env, target_channel, source_item_id,
+                created_at, updated_at
+            ) VALUES (
+                %s, NULL, %s, NULL, %s, %s, %s,
+                %s, 'approved', %s, %s,
+                %s::jsonb, %s, 'approved', %s,
+                true, 'weekly_digest_post', 'weekly_digest', false, NULL,
+                'prod', 'main', %s,
+                now(), now()
+            )
+            ON CONFLICT (dupe_key) DO NOTHING
+            RETURNING id
+            """,
+            (
+                primary.get("url"),
+                f"Weekly digest {iso[0]}-W{iso[1]:02d}",
+                primary.get("source"),
+                primary.get("source_domain"),
+                primary.get("source_lang"),
+                primary.get("source_published_at"),
+                primary.get("category", "news"),
+                dupe_key,
+                json.dumps(summary_patch, ensure_ascii=False),
+                post,
+                scheduled.astimezone(UTC),
+                primary["id"],
+            ),
+        )
+        if inserted is None:
+            log.info("digest_already_exists_this_week", dupe_key=dupe_key)
+            return 0
+        digest_id = inserted["id"]
+        wrapped = wrap_tracked_links(post, digest_id)
+        if wrapped != post:
+            execute(
+                "UPDATE feed_items SET post_draft = %s, updated_at = now() WHERE id = %s",
+                (wrapped, digest_id),
+            )
+        log.info(
+            "prod_digest_ready",
+            digest_id=digest_id,
+            sources=len(digest_materials),
             scheduled=scheduled.isoformat(),
         )
     else:
