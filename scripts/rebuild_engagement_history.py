@@ -34,12 +34,12 @@ from aibp.utils.config import get_settings  # noqa: E402
 HORIZON_HOURS = 48
 
 
-def subscribers_near(feed_item_id: int, posted_at, horizon_hours: int) -> int | None:
-    """Subscriber count from the existing snapshot nearest posted_at+horizon.
+def subscribers_near(posted_at, horizon_hours: int) -> int | None:
+    """Channel subscriber count from the snapshot nearest posted_at+horizon.
 
     The old rows carried a correct subscribers_at even while views were 0, so
-    this reconstructs the right denominator for each post's reward. Falls back
-    to the channel-wide nearest reading if the post has no rows yet.
+    this reconstructs the right denominator (reward = views / subscribers) for
+    each post from the reading closest to its horizon.
     """
     row = fetch_one(
         """
@@ -109,7 +109,7 @@ async def main() -> int:
             continue
 
         views = views_map[msg_id]
-        subs = subscribers_near(fid, p["posted_at"], HORIZON_HOURS)
+        subs = subscribers_near(p["posted_at"], HORIZON_HOURS)
         measured_at = p["posted_at"] + timedelta(hours=HORIZON_HOURS)
         print(f"  msg {msg_id} (feed_item {fid}): views={views} subs={subs} @ {measured_at:%Y-%m-%d}")
 
