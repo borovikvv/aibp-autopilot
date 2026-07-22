@@ -20,6 +20,11 @@ class Settings:
     telegram_bot_token: str
     telegram_channel_id_prod: str
     telegram_channel_id_test: str
+    # Public @username of the prod channel (no @). Used to read real post
+    # views from the t.me/s/<username> web preview — the Bot API cannot
+    # report a channel post's view count (see ADR-0005). Empty → the
+    # engagement collector cannot gather views.
+    telegram_channel_username_prod: str
     telegram_alert_chat_id: str
 
     # Database
@@ -78,6 +83,7 @@ class Settings:
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_channel_id_prod=os.getenv("TELEGRAM_CHANNEL_ID_PROD", ""),
             telegram_channel_id_test=os.getenv("TELEGRAM_CHANNEL_ID_TEST", ""),
+            telegram_channel_username_prod=os.getenv("TELEGRAM_CHANNEL_USERNAME_PROD", "").lstrip("@"),
             telegram_alert_chat_id=os.getenv("TELEGRAM_ALERT_CHAT_ID", ""),
             database_url=os.getenv("DATABASE_URL", "postgresql://aibp:aibp@localhost:5432/aibp"),
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),

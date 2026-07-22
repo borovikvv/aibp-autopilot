@@ -185,25 +185,23 @@ crontab -e
 ### ⚠️ Координация getUpdates (обязательно к прочтению)
 
 Telegram Bot API разрешает **только одного** потребителя `getUpdates` на бота
-одновременно — два параллельных вызова дают `409 Conflict`. У нас потенциально
-два потребителя:
+одновременно — два параллельных вызова дают `409 Conflict`.
 
-- **Approval gate** (`aibp.self_learning.approvals`) — читает нажатия кнопок
-  approve/reject (тип `callback_query`).
-- **Engagement collector** — использует `getUpdates` **только как фолбэк**,
-  когда `TELEGRAM_METRICS_CHAT_ID` не задан.
+Единственный потребитель `getUpdates` — **Approval gate**
+(`aibp.self_learning.approvals`), читает нажатия кнопок approve/reject
+(`callback_query`) и `chat_member`-апдейты для атрибуции подписок. Engagement
+collector `getUpdates` **не трогает** — просмотры он читает из веб-превью
+`t.me/s/<username>` (ADR-0005 / issue #49), поэтому конфликт по построению
+невозможен.
 
-Защита в коде: оба потребителя берут общий межпроцессный файловый лок
-(`aibp.self_learning.telegram_lock`), поэтому одновременно `getUpdates` не
-вызовут — при занятом локе вызов пропускается и повторится на следующем тике.
-Если 409 всё же приходит (например, на боте выставлен webhook), approval gate
-шлёт алерт в `TELEGRAM_ALERT_CHAT_ID`, а не падает молча.
+Защита в коде сохранена на всякий случай: approval gate берёт межпроцессный
+файловый лок (`aibp.self_learning.telegram_lock`) — на случай второго поллера
+или гонки с webhook. Если 409 всё же приходит (например, на боте выставлен
+webhook), approval gate шлёт алерт в `TELEGRAM_ALERT_CHAT_ID`, а не падает молча.
 
-**Рекомендация:** задай `TELEGRAM_METRICS_CHAT_ID` в `.env`. Тогда engagement
-collector использует метод `copyMessage` и вообще не трогает `getUpdates` —
-approval gate становится единственным потребителем, и конфликт исчезает по
-построению (не только по времени, но и по данным: разрушающий сдвиг offset
-approval-поллера больше не «съедает» `channel_post`-апдейты коллектора).
+**Требование:** задай `TELEGRAM_CHANNEL_USERNAME_PROD` в `.env` (публичный
+@username прод-канала без `@`) — без него engagement collector не сможет
+собрать просмотры.
 
 ### Шаг 9: Запуск redirect service (click-tracking)
 

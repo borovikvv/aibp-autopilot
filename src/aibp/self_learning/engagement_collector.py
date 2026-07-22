@@ -1,22 +1,27 @@
-"""Engagement Collector — fetches views/forwards from TG Bot API, stores in PostgreSQL.
+"""Engagement Collector — reads real post views + subscriber count, stores in PostgreSQL.
 
 Cron: every 4h via Hermes.
 
-Strategy:
-  1. Primary: copyMessage to a private "metrics" chat (bot's own chat with owner),
-     read views/forwards/reactions from the copy, then delete it.
-     This works for ANY post (not just recent 100 updates), and avoids 409 conflicts.
-  2. Fallback: getUpdates scan (only for posts in last ~48h, may conflict with webhooks).
+Views come from the public web preview `https://t.me/s/<username>`: it renders
+every post with its real `views` counter and a `data-post="<user>/<msg_id>"`
+anchor that joins straight to feed_items.published_message_id. One page holds
+~20 posts, so the whole recent window is fetched in one or two requests and
+turned into a {message_id: views} map — no per-post API call.
 
-If copyMessage chat is not configured, falls back to getUpdates with explicit
-409 handling and alerting.
+Why not the Bot API: it has NO way to read a channel post's view count.
+`copyMessage` returns only a MessageId (no views), and a copied/forwarded
+message starts its own counter at 0; `getUpdates` only sees a post at
+publish time (views=0) and drops out of the ~100-update window within ~48h.
+Both silently yielded zeros for 11 days (issue #49). See ADR-0005.
 
-See ADR-0005 for Bot API vs MTProto trade-offs.
+Forwards/reactions are NOT in the web preview. At this channel's scale they
+are ~0 (reward weight × 0 = 0); if they ever matter, ADR-0005 Tier 3 (MTProto)
+is the documented upgrade. Subscriber count still comes from the Bot API
+(getChatMembersCount). Clicks are collected separately by the redirect service.
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from datetime import UTC, datetime
 
@@ -25,16 +30,21 @@ import structlog
 from psycopg2.extras import Json
 
 from aibp.db.connection import execute, fetch_all
-from aibp.self_learning.telegram_lock import getupdates_lock
 from aibp.utils.config import get_settings
 from aibp.utils.summary import parse_summary
 
 log = structlog.get_logger()
 
 TELEGRAM_API = "https://api.telegram.org"
+TME_PREVIEW = "https://t.me/s"
 
 # Regex for validating chat_id format (negative number for channels/groups)
 CHAT_ID_RE = re.compile(r"^-?\d+$")
+
+# Web-preview parsing: each post exposes data-post="<username>/<msg_id>" and a
+# views span. Counts may be abbreviated ("1.2K", "3M").
+_POST_ANCHOR_RE = re.compile(r'data-post="[^"/]+/(\d+)"')
+_VIEWS_RE = re.compile(r'tgme_widget_message_views">([\d.,]+[KMB]?)<')
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -75,6 +85,14 @@ async def _tg_call(
     return resp.json()
 
 
+def _post_age_seconds(posted_at) -> float | None:
+    """Seconds since a post's posted_at, or None if it can't be determined."""
+    if posted_at is None or not hasattr(posted_at, "tzinfo"):
+        return None
+    dt = posted_at if posted_at.tzinfo else posted_at.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - dt).total_seconds()
+
+
 async def _send_alert(bot_token: str, alert_chat_id: str, message: str) -> None:
     """Send alert message to owner (best-effort, no error propagation)."""
     if not alert_chat_id:
@@ -113,237 +131,100 @@ async def get_chat_members_count(bot_token: str, chat_id: str) -> int | None:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Primary strategy: copyMessage workaround
+# Views via public web preview (t.me/s/<username>)
 # ═══════════════════════════════════════════════════════════════════
 
-async def get_views_via_copy(
-    bot_token: str,
-    source_chat_id: int,
-    message_id: str | int,
-    metrics_chat_id: int,
-) -> dict | None:
-    """Get views by copying message to a private metrics chat, then deleting.
-
-    How it works:
-      1. copyMessage from source channel to metrics chat → returns Message object
-      2. The copied Message contains `views`, `forwards`, `reactions` fields
-      3. deleteMessage to clean up
-
-    Pros: works for ANY post (not just last 100 updates), no 409 conflicts.
-    Cons: requires a private chat where bot can send+delete messages.
-
-    Args:
-        bot_token: Bot API token
-        source_chat_id: Channel ID where the original post lives
-        message_id: Message ID in the source channel
-        metrics_chat_id: Private chat ID for temporary copies (your personal chat)
-
-    Returns:
-        dict with views, forwards, reactions_count, reactions_breakdown — or None.
-    """
+def _parse_count(raw: str) -> int:
+    """Parse a Telegram view counter: '8' → 8, '1.2K' → 1200, '3M' → 3_000_000."""
+    s = raw.strip().replace(",", "").replace(" ", "")
+    if not s:
+        return 0
+    mult = 1
+    if s[-1] in "KMB":
+        mult = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}[s[-1]]
+        s = s[:-1]
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            # Step 1: Copy message to metrics chat
-            copy_resp = await _tg_call(client, bot_token, "copyMessage", {
-                "chat_id": metrics_chat_id,
-                "from_chat_id": source_chat_id,
-                "message_id": int(message_id),
-            })
+        return int(float(s) * mult)
+    except ValueError:
+        return 0
 
-            if not copy_resp.get("ok"):
-                error_desc = copy_resp.get("description", "unknown error")
-                error_code = copy_resp.get("error_code")
-                # Common errors:
-                # 400 "message to copy not found" — post was deleted
-                # 400 "chat not found" — wrong metrics_chat_id
-                # 403 "bot was blocked by the user" — owner blocked the bot
-                log.warning(
-                    "copy_message_failed",
-                    source_chat=source_chat_id,
-                    message_id=message_id,
-                    error_code=error_code,
-                    error=error_desc,
-                )
-                return None
 
-            copied_message = copy_resp.get("result", {})
-            copied_message_id = copied_message.get("message_id")
+def parse_views_from_html(html: str) -> dict[int, int]:
+    """Build {message_id: views} from one t.me/s preview page.
 
-            # Step 2: Extract engagement metrics from the copy
-            # Note: views/forwards are only present for channel posts.
-            # If the source is a channel, the copy retains these fields.
-            metrics = {
-                "views": copied_message.get("views", 0) or 0,
-                "forwards": copied_message.get("forwards", 0) or 0,
-                "replies": (
-                    copied_message.get("replies", {}).get("total_count", 0)
-                    if isinstance(copied_message.get("replies"), dict)
-                    else 0
-                ),
-                "reactions_count": sum(
-                    r.get("total_count", 0) for r in copied_message.get("reactions", []) or []
-                ),
-                "reactions_breakdown": json.dumps(
-                    copied_message.get("reactions", []), ensure_ascii=False
-                ),
-            }
+    The preview lists posts in document order; each post's data-post anchor
+    precedes its views span, so we pair each anchor with the first views span
+    that appears before the next anchor. A post with no views span (just
+    posted) is recorded as 0 so the caller can tell "seen but no views yet"
+    from "not on this page" (absent from the map).
+    """
+    anchors = list(_POST_ANCHOR_RE.finditer(html))
+    views_map: dict[int, int] = {}
+    for i, m in enumerate(anchors):
+        msg_id = int(m.group(1))
+        end = anchors[i + 1].start() if i + 1 < len(anchors) else len(html)
+        vm = _VIEWS_RE.search(html, m.end(), end)
+        views_map[msg_id] = _parse_count(vm.group(1)) if vm else 0
+    return views_map
 
-            # Step 3: Delete the copy to keep metrics chat clean
-            if copied_message_id:
-                await _tg_call(client, bot_token, "deleteMessage", {
-                    "chat_id": metrics_chat_id,
-                    "message_id": copied_message_id,
-                })
 
-            return metrics
+async def fetch_views_map(
+    username: str,
+    min_message_id: int = 0,
+    max_pages: int = 30,
+) -> dict[int, int]:
+    """Fetch views for a public channel via its web preview, paginating back.
 
+    Walks `t.me/s/<username>?before=<oldest_id>` until the oldest post on a
+    page is <= min_message_id (window covered), a page repeats/empties, or
+    max_pages is hit (safety bound for a full-history rebuild).
+
+    Returns {message_id: views} across all fetched pages.
+    """
+    views: dict[int, int] = {}
+    before: int | None = None
+    try:
+        async with httpx.AsyncClient(
+            timeout=20, follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; aibp-metrics/1.0)"},
+        ) as client:
+            for _ in range(max_pages):
+                params = {"before": before} if before else {}
+                resp = await client.get(f"{TME_PREVIEW}/{username}", params=params)
+                resp.raise_for_status()
+                page = parse_views_from_html(resp.text)
+                if not page:
+                    break
+                new_ids = set(page) - set(views)
+                if not new_ids:
+                    break  # pagination did not advance
+                views.update(page)
+                oldest = min(page)
+                if oldest <= min_message_id:
+                    break
+                before = oldest
+                await asyncio.sleep(0.3)  # be gentle on t.me
     except httpx.HTTPError as e:
-        log.error("copy_message_http_error", error=str(e))
-        return None
+        log.error("web_preview_http_error", username=username, error=str(e))
     except Exception as e:
-        log.error("copy_message_error", error=str(e))
-        return None
+        log.error("web_preview_error", username=username, error=str(e))
+    return views
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Fallback strategy: getUpdates scan
-# ═══════════════════════════════════════════════════════════════════
+def build_metrics(views: int, subscribers_at: int) -> dict:
+    """Engagement row from a web-preview view count.
 
-async def get_views_via_updates(
-    bot_token: str,
-    chat_id: int,
-    message_id: str | int,
-    alert_chat_id: str = "",
-) -> dict | None:
-    """Fallback: scan getUpdates for the message. Only works for recent posts.
-
-    Limitations:
-      - Only finds posts in the last ~100 updates (~48h)
-      - May return 409 Conflict if a webhook is set or another process uses getUpdates
-      - Older posts are silently skipped (returns None)
+    forwards/replies/reactions are unavailable via the web preview (see module
+    docstring) — stored as 0 rather than guessed.
     """
-    # Serialize against the approval-gate poller so the two never hit
-    # getUpdates concurrently (issue #24). A busy lock → skip this run.
-    with getupdates_lock() as acquired:
-        if not acquired:
-            log.info("get_updates_skipped_locked", message_id=str(message_id))
-            return None
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                data = await _tg_call(client, bot_token, "getUpdates", {
-                    "offset": -100,
-                    "allowed_updates": "channel_post",
-                })
-        except httpx.HTTPError as e:
-            log.error("get_updates_http_error", error=str(e))
-            return None
-
-    if not data.get("ok"):
-        error_code = data.get("error_code")
-        error_desc = data.get("description", "")
-
-        # 409 Conflict: another instance or webhook is using getUpdates
-        if error_code == 409:
-            log.error(
-                "get_updates_conflict",
-                error=error_desc,
-                hint="Bot has webhook set OR another process uses getUpdates. "
-                     "Configure TELEGRAM_METRICS_CHAT_ID to use copyMessage method instead.",
-            )
-            if alert_chat_id:
-                await _send_alert(
-                    bot_token, alert_chat_id,
-                    "getUpdates conflict (409). Engagement collector cannot use fallback method.\n"
-                    "Configure TELEGRAM_METRICS_CHAT_ID in .env to enable copyMessage method.\n"
-                    f"Error: {error_desc}"
-                )
-        else:
-            log.warning("get_updates_failed", error_code=error_code, error=error_desc)
-        return None
-
-    # Scan updates for matching message
-    for update in data.get("result", []):
-        cp = update.get("channel_post", {})
-        if (
-            cp.get("chat", {}).get("id") == chat_id
-            and str(cp.get("message_id")) == str(message_id)
-        ):
-            return {
-                "views": cp.get("views", 0) or 0,
-                "forwards": cp.get("forwards", 0) or 0,
-                "replies": (
-                    cp.get("replies", {}).get("total_count", 0)
-                    if isinstance(cp.get("replies"), dict)
-                    else 0
-                ),
-                "reactions_count": sum(
-                    r.get("total_count", 0) for r in cp.get("reactions", []) or []
-                ),
-                "reactions_breakdown": json.dumps(cp.get("reactions", []), ensure_ascii=False),
-            }
-
-    return None
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Unified engagement collection
-# ═══════════════════════════════════════════════════════════════════
-
-async def collect_engagement_for_post(
-    bot_token: str,
-    item: dict,
-    subscribers_at: int,
-    metrics_chat_id: str = "",
-    alert_chat_id: str = "",
-) -> dict | None:
-    """Collect engagement for one post.
-
-    Tries copyMessage method first (if metrics_chat_id configured),
-    falls back to getUpdates scan.
-
-    Args:
-        bot_token: Telegram bot token
-        item: feed_items row dict (must have target_channel_id, published_message_id)
-        subscribers_at: Current subscriber count for normalization
-        metrics_chat_id: Private chat ID for copyMessage method (optional)
-        alert_chat_id: Where to send alerts on 409 conflict (optional)
-
-    Returns:
-        dict with views, forwards, replies, reactions_count, reactions_breakdown,
-        subscribers_at — or None if collection failed.
-    """
-    raw_chat_id = item.get("target_channel_id")
-    message_id = item.get("published_message_id")
-
-    if not raw_chat_id or not message_id:
-        return None
-
-    chat_id = _parse_chat_id(raw_chat_id)
-    if chat_id is None:
-        log.warning("skipping_invalid_chat_id", feed_item_id=item.get("id"), chat_id=raw_chat_id)
-        return None
-
-    metrics = None
-    method_used = None
-
-    # Primary: copyMessage (if configured)
-    if metrics_chat_id:
-        metrics_chat_int = _parse_chat_id(metrics_chat_id)
-        if metrics_chat_int is not None:
-            metrics = await get_views_via_copy(bot_token, chat_id, message_id, metrics_chat_int)
-            method_used = "copyMessage"
-
-    # Fallback: getUpdates
-    if metrics is None:
-        metrics = await get_views_via_updates(bot_token, chat_id, message_id, alert_chat_id)
-        method_used = "getUpdates"
-
-    if metrics is None:
-        return None
-
-    metrics["subscribers_at"] = subscribers_at
-    metrics["method"] = method_used  # for debugging
-    return metrics
+    return {
+        "views": views,
+        "forwards": 0,
+        "replies": 0,
+        "reactions_count": 0,
+        "reactions_breakdown": "[]",
+        "subscribers_at": subscribers_at,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -408,24 +289,20 @@ async def run_async() -> int:
         log.error("no_bot_token")
         return 1
 
-    # Optional: metrics chat for copyMessage method
-    metrics_chat_id = os.getenv("TELEGRAM_METRICS_CHAT_ID", "") if (os := __import__("os")) else ""
     alert_chat_id = s.telegram_alert_chat_id
+    prod_username = s.telegram_channel_username_prod
 
-    if metrics_chat_id:
-        log.info("using_copyMessage_method", metrics_chat=metrics_chat_id)
-    else:
-        log.warning(
-            "copyMessage_not_configured",
-            hint="Set TELEGRAM_METRICS_CHAT_ID in .env for reliable engagement collection. "
-                 "Without it, falling back to getUpdates (only recent posts, 409 risk).",
+    if not prod_username:
+        log.error(
+            "no_channel_username",
+            hint="Set TELEGRAM_CHANNEL_USERNAME_PROD in .env — required to read "
+                 "post views from the t.me/s web preview (see ADR-0005).",
         )
         if alert_chat_id:
             await _send_alert(
                 s.telegram_bot_token, alert_chat_id,
-                "Engagement collector is running without TELEGRAM_METRICS_CHAT_ID.\n"
-                "Falling back to getUpdates method (limited to recent posts, may conflict with webhooks).\n"
-                "Set TELEGRAM_METRICS_CHAT_ID in .env for reliable collection."
+                "Engagement collector cannot read views: TELEGRAM_CHANNEL_USERNAME_PROD "
+                "is not set in .env. Subscriber count is still collected."
             )
 
     # Get current subscribers count for both channels
@@ -508,58 +385,78 @@ async def run_async() -> int:
 
     log.info("features_stored", new=new_features, total=len(recent_posts))
 
-    # Collect engagement for all recent posts
-    def channel_id(target: str) -> str:
-        return s.telegram_channel_id_test if target == "test" else s.telegram_channel_id_prod
+    # Only the prod (main) channel has a public web preview. Test-channel
+    # posts don't drive statistics (ADR-0007), so they only carry a
+    # subscriber count, no views.
+    prod_posts = [p for p in recent_posts if p.get("target_channel", "main") != "test"]
+
+    views_map: dict[int, int] = {}
+    if prod_username and prod_posts:
+        window_min = min(int(p["published_message_id"]) for p in prod_posts)
+        views_map = await fetch_views_map(prod_username, min_message_id=window_min)
+        log.info("views_fetched", posts_in_preview=len(views_map), window_min=window_min)
 
     metrics_collected = 0
-    metrics_failed = 0
+    metrics_missing = 0  # prod post older than 1h but absent from the preview
 
     for item in recent_posts:
-        item_with_chat = {**item, "target_channel_id": channel_id(item.get("target_channel", "main"))}
-        subs = subs_test if item.get("target_channel") == "test" else subs_prod
+        is_test = item.get("target_channel") == "test"
+        subs = (subs_test if is_test else subs_prod) or 0
+        msg_id = int(item["published_message_id"])
 
-        metrics = await collect_engagement_for_post(
-            s.telegram_bot_token,
-            item_with_chat,
-            subs or 0,
-            metrics_chat_id=metrics_chat_id,
-            alert_chat_id=alert_chat_id,
-        )
-
-        if metrics:
-            execute(
-                """
-                INSERT INTO engagement_metrics
-                    (feed_item_id, measured_at, views, forwards, replies,
-                     reactions_count, reactions_breakdown, subscribers_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
-                """,
-                (
-                    item["id"],
-                    datetime.now(UTC),
-                    metrics["views"],
-                    metrics["forwards"],
-                    metrics["replies"],
-                    metrics["reactions_count"],
-                    metrics["reactions_breakdown"],  # already a JSON string — cast to jsonb
-                    metrics["subscribers_at"],
-                ),
-            )
+        if is_test:
+            # No public preview — record subscriber count only.
+            metrics = build_metrics(0, subs)
+        elif msg_id in views_map:
+            metrics = build_metrics(views_map[msg_id], subs)
             metrics_collected += 1
         else:
-            metrics_failed += 1
+            # Post exists in the DB but the preview didn't return it. For a
+            # post older than ~1h that means the source is broken (wrong
+            # username, layout change) — surface it instead of writing a
+            # silent zero (the bug behind issue #49).
+            age = _post_age_seconds(item.get("posted_at"))
+            if age is not None and age > 3600:
+                metrics_missing += 1
+                log.warning("post_views_missing", feed_item_id=item["id"], message_id=msg_id)
+            continue
 
-        # Rate limit: Telegram allows ~30 requests/sec, but be conservative
-        await asyncio.sleep(0.5)
+        execute(
+            """
+            INSERT INTO engagement_metrics
+                (feed_item_id, measured_at, views, forwards, replies,
+                 reactions_count, reactions_breakdown, subscribers_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            """,
+            (
+                item["id"],
+                datetime.now(UTC),
+                metrics["views"],
+                metrics["forwards"],
+                metrics["replies"],
+                metrics["reactions_count"],
+                metrics["reactions_breakdown"],
+                metrics["subscribers_at"],
+            ),
+        )
 
     log.info(
         "engagement_collected",
         posts=len(recent_posts),
-        collected=metrics_collected,
-        failed=metrics_failed,
-        method="copyMessage" if metrics_chat_id else "getUpdates",
+        prod_collected=metrics_collected,
+        prod_missing=metrics_missing,
     )
+
+    # A total blackout on prod views (posts exist, preview yielded nothing) is
+    # the issue-#49 failure mode — alert rather than fail silent.
+    if prod_username and prod_posts and metrics_collected == 0:
+        log.error("all_prod_views_missing", prod_posts=len(prod_posts))
+        if alert_chat_id:
+            await _send_alert(
+                s.telegram_bot_token, alert_chat_id,
+                f"Engagement collector got 0 views for {len(prod_posts)} prod posts from "
+                f"t.me/s/{prod_username}. Check the username and the preview layout."
+            )
 
     # Feed the bandit (issue #18): posts past the 48h horizon are scored
     # against the trailing median. Never fail the collection run over it.
