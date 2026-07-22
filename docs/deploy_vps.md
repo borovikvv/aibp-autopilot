@@ -24,7 +24,7 @@ paused, monetization off; prove each layer on real data before trusting it.
 - [ ] `OPENROUTER_API_KEY` and a sane `OPENROUTER_DAILY_BUDGET_USD`.
 - [ ] `TELEGRAM_BOT_TOKEN` for a bot that is **admin** of both a TEST channel and the PROD channel.
 - [ ] `TELEGRAM_CHANNEL_ID_PROD`, `TELEGRAM_CHANNEL_ID_TEST`, `TELEGRAM_ALERT_CHAT_ID`.
-- [ ] A private "metrics" chat id (`TELEGRAM_METRICS_CHAT_ID`) — the bot's own chat with the owner; needed so the engagement collector uses `copyMessage` and does not fight the approval poller over `getUpdates` (issue #24).
+- [ ] `TELEGRAM_CHANNEL_USERNAME_PROD` — the prod channel's public @username (without @); the engagement collector reads post views from `t.me/s/<username>` (ADR-0005 / issue #49).
 - [ ] Decision: monetization now or later? If now, also: a public domain for the redirect service (`TRACKING_BASE_URL`) and a web-served static dir for images (`IMAGE_PUBLIC_BASE_URL` → `IMAGE_OUTPUT_DIR`).
 - [ ] Confirm the channel is currently run by n8n so we plan the cutover (no parallel posting).
 
@@ -63,7 +63,7 @@ make bootstrap        # installs deps, sets up PostgreSQL, inits DB, checks secr
 cp .env.example .env
 # Fill in every secret from Phase 0. Keep monetization/autopilot OFF for now:
 #   TRACKING_BASE_URL=            (empty → tracking off)
-#   TELEGRAM_METRICS_CHAT_ID=<private metrics chat>
+#   TELEGRAM_CHANNEL_USERNAME_PROD=<prod channel @username, no @>
 #   OPENROUTER_DAILY_BUDGET_USD=<real cap>
 ```
 

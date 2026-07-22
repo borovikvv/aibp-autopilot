@@ -10,17 +10,16 @@ approve/reject inline buttons goes to the alert chat.
     python -m aibp.self_learning.approvals --remind   # re-send pending requests
 
 Callback polling uses getUpdates limited to callback_query. getUpdates is
-exclusive per bot, so this poller and the engagement collector's getUpdates
-fallback share a cross-process lock (aibp.self_learning.telegram_lock) and can
-never run it concurrently (issue #24). A 409 that slips through anyway is
-alerted, not silent. Setting TELEGRAM_METRICS_CHAT_ID makes the collector use
-copyMessage so this poller owns getUpdates exclusively.
+exclusive per bot; this poller is its sole owner now that the engagement
+collector reads views from the web preview instead of getUpdates (ADR-0005 /
+issue #49). A cross-process lock (aibp.self_learning.telegram_lock, issue #24)
+still guards against a stray second poller or webhook race; a 409 that slips
+through is alerted, not silent.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 from datetime import UTC, datetime
 
 import httpx
@@ -199,23 +198,16 @@ async def _answer_callback(bot_token: str, callback_id: str, text: str) -> None:
 async def process_callbacks_async() -> int:
     """Poll pending callback queries and act on them. Returns actions taken.
 
-    Serialized against the engagement collector's getUpdates fallback via a
-    cross-process lock (issue #24). If the lock is held or Telegram returns
-    409, this run is skipped/alerted and retried on the next cron tick.
+    This poller is the sole getUpdates owner (the engagement collector reads
+    views from the web preview, not getUpdates — ADR-0005 / issue #49). The
+    cross-process lock (issue #24) still guards against a stray second poller
+    or a webhook race; on a held lock or a 409 the run is skipped/alerted and
+    retried next tick.
     """
     s = get_settings()
     if not s.telegram_bot_token:
         log.error("no_bot_token")
         return 0
-
-    if not os.getenv("TELEGRAM_METRICS_CHAT_ID"):
-        # Both this poller and the collector's getUpdates fallback are active;
-        # the lock prevents a 409 race, but copyMessage removes the risk entirely.
-        log.warning(
-            "approvals_may_conflict_with_engagement_collector",
-            hint="Set TELEGRAM_METRICS_CHAT_ID so the engagement collector uses "
-                 "copyMessage and the approval poller owns getUpdates exclusively.",
-        )
 
     with getupdates_lock() as acquired:
         if not acquired:
@@ -229,9 +221,8 @@ async def process_callbacks_async() -> int:
             await _send_alert(
                 s.telegram_bot_token, s.telegram_alert_chat_id,
                 "getUpdates 409 Conflict — approvals not processed this run.\n"
-                "Another process (engagement collector fallback or a webhook) is "
-                "polling getUpdates.\n"
-                "Fix: set TELEGRAM_METRICS_CHAT_ID so the collector uses copyMessage.\n"
+                "Another process (a second poller or a webhook) is polling getUpdates.\n"
+                "Fix: ensure only the approval poller calls getUpdates and no webhook is set.\n"
                 f"Error: {e}",
             )
             return 0

@@ -1,4 +1,4 @@
-"""Tests for engagement_collector — parsing, 409 handling, method selection."""
+"""Tests for engagement_collector — web-preview parsing, counts, features."""
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,11 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from aibp.self_learning.engagement_collector import (
     _parse_chat_id,
-    collect_engagement_for_post,
+    _parse_count,
+    build_metrics,
     extract_features_for_post,
+    fetch_views_map,
     get_chat_members_count,
-    get_views_via_copy,
-    get_views_via_updates,
+    parse_views_from_html,
 )
 
 # ═══════════════════════════════════════════════════════════════════
@@ -102,264 +103,148 @@ class TestGetChatMembersCount:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# get_views_via_updates — 409 conflict handling
+# _parse_count — Telegram abbreviated view counters
 # ═══════════════════════════════════════════════════════════════════
 
-class TestGetViewsViaUpdates:
-    @pytest.mark.asyncio
-    async def test_409_conflict_triggers_alert(self):
-        """When getUpdates returns 409, should send alert if alert_chat_id set."""
-        mock_response = {
-            "ok": False,
-            "error_code": 409,
-            "description": "Conflict: terminated by other getUpdates request"
-        }
-        alert_sent = []
+class TestParseCount:
+    def test_plain(self):
+        assert _parse_count("8") == 8
+        assert _parse_count("123") == 123
 
-        async def mock_send_alert(token, chat_id, msg):
-            alert_sent.append((chat_id, msg))
+    def test_thousands(self):
+        assert _parse_count("1.2K") == 1200
+        assert _parse_count("1K") == 1000
+        assert _parse_count("12.3K") == 12300
 
-        with patch("httpx.AsyncClient") as mock_client, \
-             patch("aibp.self_learning.engagement_collector._send_alert", side_effect=mock_send_alert):
-            mock_instance = MagicMock()
-            mock_instance.post = AsyncMock(return_value=MagicMock(json=MagicMock(return_value=mock_response)))
-            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-            mock_instance.__aexit__ = AsyncMock(return_value=None)
-            mock_client.return_value = mock_instance
+    def test_millions(self):
+        assert _parse_count("3M") == 3_000_000
+        assert _parse_count("1.5M") == 1_500_000
 
-            result = await get_views_via_updates(
-                "fake_token", -1003300906776, 123,
-                alert_chat_id="999999",
-            )
-            assert result is None
-            assert len(alert_sent) == 1
-            assert "409" in alert_sent[0][1] or "Conflict" in alert_sent[0][1]
+    def test_comma_and_spaces(self):
+        assert _parse_count("1,234") == 1234
+        assert _parse_count(" 42 ") == 42
 
-    @pytest.mark.asyncio
-    async def test_409_without_alert_chat_silent(self):
-        """409 without alert_chat_id should just log, not crash."""
-        mock_response = {
-            "ok": False,
-            "error_code": 409,
-            "description": "Conflict"
-        }
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_instance = MagicMock()
-            mock_instance.post = AsyncMock(return_value=MagicMock(json=MagicMock(return_value=mock_response)))
-            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-            mock_instance.__aexit__ = AsyncMock(return_value=None)
-            mock_client.return_value = mock_instance
-
-            result = await get_views_via_updates("fake_token", -1003300906776, 123)
-            assert result is None  # no crash, no alert
-
-    @pytest.mark.asyncio
-    async def test_finds_matching_post(self):
-        """Should extract views when matching post found in updates."""
-        mock_response = {
-            "ok": True,
-            "result": [
-                {
-                    "channel_post": {
-                        "chat": {"id": -1003300906776},
-                        "message_id": 123,
-                        "views": 456,
-                        "forwards": 5,
-                        "reactions": [{"type": {"emoji": "👍"}, "total_count": 10}],
-                    }
-                }
-            ],
-        }
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_instance = MagicMock()
-            mock_instance.post = AsyncMock(return_value=MagicMock(json=MagicMock(return_value=mock_response)))
-            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-            mock_instance.__aexit__ = AsyncMock(return_value=None)
-            mock_client.return_value = mock_instance
-
-            result = await get_views_via_updates("fake_token", -1003300906776, 123)
-            assert result is not None
-            assert result["views"] == 456
-            assert result["forwards"] == 5
-            assert result["reactions_count"] == 10
-
-    @pytest.mark.asyncio
-    async def test_no_matching_post(self):
-        """Should return None if post not in updates."""
-        mock_response = {
-            "ok": True,
-            "result": [
-                {
-                    "channel_post": {
-                        "chat": {"id": -1003300906776},
-                        "message_id": 999,  # different message
-                        "views": 100,
-                    }
-                }
-            ],
-        }
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_instance = MagicMock()
-            mock_instance.post = AsyncMock(return_value=MagicMock(json=MagicMock(return_value=mock_response)))
-            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-            mock_instance.__aexit__ = AsyncMock(return_value=None)
-            mock_client.return_value = mock_instance
-
-            result = await get_views_via_updates("fake_token", -1003300906776, 123)
-            assert result is None
+    def test_empty_or_garbage(self):
+        assert _parse_count("") == 0
+        assert _parse_count("abc") == 0
 
 
 # ═══════════════════════════════════════════════════════════════════
-# get_views_via_copy
+# parse_views_from_html — t.me/s preview page
 # ═══════════════════════════════════════════════════════════════════
 
-class TestGetViewsViaCopy:
-    @pytest.mark.asyncio
-    async def test_successful_copy_and_extract(self):
-        """copyMessage returns message with views, then deletes the copy."""
-        copy_response = {
-            "ok": True,
-            "result": {
-                "message_id": 789,  # ID of the copy in metrics chat
-                "views": 500,
-                "forwards": 3,
-                "reactions": [{"type": {"emoji": "🔥"}, "total_count": 7}],
-            },
-        }
-        delete_response = {"ok": True, "result": True}
+# Minimal shape mirroring the real t.me/s markup: a data-post anchor per
+# message, each followed by a views span before the next anchor.
+_PREVIEW_HTML = """
+<div class="tgme_widget_message" data-post="AI_Business_Pulse/663">
+  <div class="tgme_widget_message_views">7</div>
+</div>
+<div class="tgme_widget_message" data-post="AI_Business_Pulse/664">
+  <div class="tgme_widget_message_views">1.2K</div>
+</div>
+<div class="tgme_widget_message" data-post="AI_Business_Pulse/665">
+  <div class="tgme_widget_message_views">9</div>
+</div>
+"""
 
-        call_count = 0
-        async def mock_post(url, json=None):
-            nonlocal call_count
-            call_count += 1
-            if "copyMessage" in url:
-                return MagicMock(json=MagicMock(return_value=copy_response))
-            elif "deleteMessage" in url:
-                return MagicMock(json=MagicMock(return_value=delete_response))
+
+class TestParseViewsFromHtml:
+    def test_maps_message_id_to_views(self):
+        result = parse_views_from_html(_PREVIEW_HTML)
+        assert result == {663: 7, 664: 1200, 665: 9}
+
+    def test_post_without_views_span_is_zero(self):
+        html = '<div data-post="chan/700"></div><div data-post="chan/701"><span class="tgme_widget_message_views">5</span></div>'
+        result = parse_views_from_html(html)
+        assert result[700] == 0  # seen but no views yet, not absent
+        assert result[701] == 5
+
+    def test_empty_page(self):
+        assert parse_views_from_html("<html></html>") == {}
+
+    def test_does_not_leak_views_across_messages(self):
+        # Post 800 has no span; the span belongs to 801 and must not bleed up.
+        html = ('<a data-post="chan/800"></a>'
+                '<a data-post="chan/801"></a><i class="tgme_widget_message_views">99</i>')
+        result = parse_views_from_html(html)
+        assert result == {800: 0, 801: 99}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# fetch_views_map — pagination
+# ═══════════════════════════════════════════════════════════════════
+
+class TestFetchViewsMap:
+    @pytest.mark.asyncio
+    async def test_paginates_until_min_id(self):
+        # Page 1 (newest): 665,664; page 2: 663,662. min_message_id=663 stops after page 2.
+        pages = [
+            '<a data-post="c/665"></a><b class="tgme_widget_message_views">9</b>'
+            '<a data-post="c/664"></a><b class="tgme_widget_message_views">8</b>',
+            '<a data-post="c/663"></a><b class="tgme_widget_message_views">7</b>'
+            '<a data-post="c/662"></a><b class="tgme_widget_message_views">6</b>',
+        ]
+        calls = []
+
+        async def mock_get(url, params=None):
+            calls.append(params)
+            idx = len(calls) - 1
+            return MagicMock(text=pages[idx], raise_for_status=MagicMock())
 
         with patch("httpx.AsyncClient") as mock_client:
-            mock_instance = MagicMock()
-            mock_instance.post = AsyncMock(side_effect=mock_post)
-            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-            mock_instance.__aexit__ = AsyncMock(return_value=None)
-            mock_client.return_value = mock_instance
+            inst = MagicMock()
+            inst.get = AsyncMock(side_effect=mock_get)
+            inst.__aenter__ = AsyncMock(return_value=inst)
+            inst.__aexit__ = AsyncMock(return_value=None)
+            mock_client.return_value = inst
 
-            result = await get_views_via_copy("fake_token", -1003300906776, 123, 999999)
-            assert result is not None
-            assert result["views"] == 500
-            assert result["forwards"] == 3
-            assert result["reactions_count"] == 7
-            assert call_count == 2  # copy + delete
+            result = await fetch_views_map("c", min_message_id=663)
+            assert result == {665: 9, 664: 8, 663: 7, 662: 6}
+            assert calls[0] == {}                 # first page: no before
+            assert calls[1] == {"before": 664}    # paged from oldest of page 1
 
     @pytest.mark.asyncio
-    async def test_copy_fails_message_not_found(self):
-        """If message was deleted from channel, copyMessage returns 400."""
-        copy_response = {
-            "ok": False,
-            "error_code": 400,
-            "description": "Bad Request: message to copy not found"
-        }
+    async def test_stops_when_pagination_repeats(self):
+        page = '<a data-post="c/665"></a><b class="tgme_widget_message_views">9</b>'
+
+        async def mock_get(url, params=None):
+            return MagicMock(text=page, raise_for_status=MagicMock())
+
         with patch("httpx.AsyncClient") as mock_client:
-            mock_instance = MagicMock()
-            mock_instance.post = AsyncMock(
-                return_value=MagicMock(json=MagicMock(return_value=copy_response))
-            )
-            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-            mock_instance.__aexit__ = AsyncMock(return_value=None)
-            mock_client.return_value = mock_instance
+            inst = MagicMock()
+            inst.get = AsyncMock(side_effect=mock_get)
+            inst.__aenter__ = AsyncMock(return_value=inst)
+            inst.__aexit__ = AsyncMock(return_value=None)
+            mock_client.return_value = inst
 
-            result = await get_views_via_copy("fake_token", -1003300906776, 123, 999999)
-            assert result is None
+            result = await fetch_views_map("c", min_message_id=0, max_pages=10)
+            assert result == {665: 9}  # no new ids on page 2 → stop, no infinite loop
+
+    @pytest.mark.asyncio
+    async def test_http_error_returns_partial(self):
+        with patch("httpx.AsyncClient") as mock_client:
+            inst = MagicMock()
+            inst.get = AsyncMock(side_effect=__import__("httpx").HTTPError("boom"))
+            inst.__aenter__ = AsyncMock(return_value=inst)
+            inst.__aexit__ = AsyncMock(return_value=None)
+            mock_client.return_value = inst
+
+            result = await fetch_views_map("c")
+            assert result == {}  # degrades to empty, no crash
 
 
 # ═══════════════════════════════════════════════════════════════════
-# collect_engagement_for_post — method selection
+# build_metrics
 # ═══════════════════════════════════════════════════════════════════
 
-class TestCollectEngagementMethodSelection:
-    @pytest.mark.asyncio
-    async def test_uses_copyMessage_when_configured(self):
-        """When metrics_chat_id is set, should try copyMessage first."""
-        with patch("aibp.self_learning.engagement_collector.get_views_via_copy", new_callable=AsyncMock) as mock_copy, \
-             patch("aibp.self_learning.engagement_collector.get_views_via_updates", new_callable=AsyncMock) as mock_updates:
-
-            mock_copy.return_value = {"views": 100, "forwards": 0, "replies": 0,
-                                       "reactions_count": 0, "reactions_breakdown": "[]"}
-
-            result = await collect_engagement_for_post(
-                "fake_token",
-                {"target_channel_id": "-1003300906776", "published_message_id": "123"},
-                subscribers_at=1000,
-                metrics_chat_id="999999",
-            )
-            assert result is not None
-            assert result["views"] == 100
-            assert result["method"] == "copyMessage"
-            mock_updates.assert_not_called()  # fallback not used
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_updates_when_copy_fails(self):
-        """If copyMessage returns None, should try getUpdates."""
-        with patch("aibp.self_learning.engagement_collector.get_views_via_copy", new_callable=AsyncMock) as mock_copy, \
-             patch("aibp.self_learning.engagement_collector.get_views_via_updates", new_callable=AsyncMock) as mock_updates:
-
-            mock_copy.return_value = None  # copy failed
-            mock_updates.return_value = {"views": 50, "forwards": 0, "replies": 0,
-                                          "reactions_count": 0, "reactions_breakdown": "[]"}
-
-            result = await collect_engagement_for_post(
-                "fake_token",
-                {"target_channel_id": "-1003300906776", "published_message_id": "123"},
-                subscribers_at=1000,
-                metrics_chat_id="999999",
-            )
-            assert result is not None
-            assert result["views"] == 50
-            assert result["method"] == "getUpdates"
-
-    @pytest.mark.asyncio
-    async def test_uses_updates_when_no_metrics_chat(self):
-        """Without metrics_chat_id, should use getUpdates directly."""
-        with patch("aibp.self_learning.engagement_collector.get_views_via_copy", new_callable=AsyncMock) as mock_copy, \
-             patch("aibp.self_learning.engagement_collector.get_views_via_updates", new_callable=AsyncMock) as mock_updates:
-
-            mock_updates.return_value = {"views": 50, "forwards": 0, "replies": 0,
-                                          "reactions_count": 0, "reactions_breakdown": "[]"}
-
-            result = await collect_engagement_for_post(
-                "fake_token",
-                {"target_channel_id": "-1003300906776", "published_message_id": "123"},
-                subscribers_at=1000,
-                metrics_chat_id="",  # not configured
-            )
-            assert result is not None
-            mock_copy.assert_not_called()
-            mock_updates.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_invalid_chat_id_returns_none(self):
-        """Invalid chat_id should return None without API calls."""
-        with patch("aibp.self_learning.engagement_collector.get_views_via_copy", new_callable=AsyncMock) as mock_copy, \
-             patch("aibp.self_learning.engagement_collector.get_views_via_updates", new_callable=AsyncMock) as mock_updates:
-
-            result = await collect_engagement_for_post(
-                "fake_token",
-                {"target_channel_id": "not-a-number", "published_message_id": "123"},
-                subscribers_at=1000,
-            )
-            assert result is None
-            mock_copy.assert_not_called()
-            mock_updates.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_missing_message_id_returns_none(self):
-        """Missing published_message_id should return None."""
-        result = await collect_engagement_for_post(
-            "fake_token",
-            {"target_channel_id": "-1003300906776", "published_message_id": None},
-            subscribers_at=1000,
-        )
-        assert result is None
+class TestBuildMetrics:
+    def test_views_and_subs_set_rest_zero(self):
+        m = build_metrics(42, 317)
+        assert m["views"] == 42
+        assert m["subscribers_at"] == 317
+        assert m["forwards"] == 0
+        assert m["reactions_count"] == 0
+        assert m["reactions_breakdown"] == "[]"
 
 
 # ═══════════════════════════════════════════════════════════════════

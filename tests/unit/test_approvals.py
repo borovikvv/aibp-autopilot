@@ -353,7 +353,6 @@ def test_poller_alerts_on_409_conflict():
     from aibp.self_learning import approvals
 
     with patch.object(approvals, "get_settings", return_value=_SETTINGS), \
-         patch.dict("os.environ", {"TELEGRAM_METRICS_CHAT_ID": "123"}), \
          patch.object(approvals, "_get_updates",
                       new=AsyncMock(side_effect=approvals.GetUpdatesConflictError("conflict"))), \
          patch.object(approvals, "_send_alert", new=AsyncMock()) as alert:
@@ -361,8 +360,8 @@ def test_poller_alerts_on_409_conflict():
 
     assert result == 0
     alert.assert_awaited_once()
-    # The alert names the fix (set the metrics chat)
-    assert "TELEGRAM_METRICS_CHAT_ID" in alert.await_args.args[2]
+    # The alert explains the 409 and names getUpdates as the contended resource
+    assert "getUpdates" in alert.await_args.args[2]
 
 
 def test_poller_processes_callback_under_real_lock(fake, tmp_path):
@@ -378,7 +377,6 @@ def test_poller_processes_callback_under_real_lock(fake, tmp_path):
                 "callback_query": {"id": "cb1", "data": f"exp_reject:{exp_id}"}}]
 
     with patch.object(approvals, "get_settings", return_value=_SETTINGS), \
-         patch.dict("os.environ", {"TELEGRAM_METRICS_CHAT_ID": "123"}), \
          patch.object(approvals, "_get_updates", new=AsyncMock(return_value=updates)), \
          patch.object(approvals, "_answer_callback", new=AsyncMock()), \
          patch.object(decision_engine, "POLICY_PATH", tmp_path / "policy.yaml"):

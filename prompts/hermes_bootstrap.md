@@ -214,11 +214,9 @@ cronjob(
 )
 
 # Engagement Collector — every 4 hours
-# NOTE (issue #24): the collector uses getUpdates ONLY as a fallback when
-# TELEGRAM_METRICS_CHAT_ID is unset. getUpdates is exclusive per bot, so it
-# shares a cross-process lock with the Approval Gate job below (never a 409
-# from concurrency). Set TELEGRAM_METRICS_CHAT_ID so the collector uses
-# copyMessage and the Approval Gate owns getUpdates exclusively.
+# NOTE (ADR-0005 / issue #49): the collector reads post views from the public
+# web preview t.me/s/<username> (needs TELEGRAM_CHANNEL_USERNAME_PROD in .env);
+# it does NOT call getUpdates, so it can never 409 against the Approval Gate.
 cronjob(
     action='create',
     name='AIBP — Engagement Collector',
