@@ -22,45 +22,49 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import statistics
 import sys
 from datetime import timedelta
 
 sys.path.insert(0, "src")
 
-from aibp.db.connection import execute, fetch_all, fetch_one  # noqa: E402
+from aibp.db.connection import execute, fetch_all  # noqa: E402
 from aibp.self_learning.engagement_collector import fetch_views_map  # noqa: E402
 from aibp.utils.config import get_settings  # noqa: E402
 
 HORIZON_HOURS = 48
 
 
+SUBS_WINDOW_DAYS = 2
+
+
 def subscribers_near(posted_at, horizon_hours: int) -> int | None:
-    """Channel subscriber count from the snapshot nearest posted_at+horizon.
+    """Median MAIN-channel subscriber count around posted_at+horizon.
 
     The old rows carried a correct subscribers_at even while views were 0, so
-    this reconstructs the right denominator (reward = views / subscribers) for
-    each post from the reading closest to its horizon.
+    this reconstructs the right denominator (reward = views / subscribers).
+    Two robustness measures, both needed:
+
+    - Restricted to MAIN-channel rows — the test channel sits at ~3 subs and
+      would otherwise leak in and inflate a prod post's reward ~100x.
+    - MEDIAN over a ±2d window, not the single nearest reading — even the main
+      series has occasional spurious `3` readings; the count moves ~1/day, so
+      the window median is a stable estimator that ignores those outliers.
     """
-    row = fetch_one(
+    target = posted_at + timedelta(hours=horizon_hours)
+    rows = fetch_all(
         """
         SELECT em.subscribers_at
         FROM engagement_metrics em
+        JOIN post_features pf ON pf.feed_item_id = em.feed_item_id
         WHERE em.subscribers_at IS NOT NULL
-        ORDER BY ABS(EXTRACT(EPOCH FROM (em.measured_at - %s)))
-        LIMIT 1
+          AND pf.target_channel = 'main'
+          AND em.measured_at BETWEEN %s AND %s
         """,
-        (posted_at + timedelta(hours=horizon_hours),),
+        (target - timedelta(days=SUBS_WINDOW_DAYS), target + timedelta(days=SUBS_WINDOW_DAYS)),
     )
-    return row["subscribers_at"] if row else None
-
-
-def has_real_snapshot(feed_item_id: int) -> bool:
-    """True if a non-zero-views snapshot already exists for this post."""
-    row = fetch_one(
-        "SELECT 1 FROM engagement_metrics WHERE feed_item_id = %s AND views > 0 LIMIT 1",
-        (feed_item_id,),
-    )
-    return row is not None
+    vals = [r["subscribers_at"] for r in rows]
+    return round(statistics.median(vals)) if vals else None
 
 
 async def main() -> int:
@@ -96,13 +100,10 @@ async def main() -> int:
     views_map = await fetch_views_map(username, min_message_id=window_min)
     print(f"Preview returned {len(views_map)} posts.\n")
 
-    inserted = skipped_existing = missing = 0
+    written = missing = 0
     for p in posts:
         fid = p["id"]
         msg_id = int(p["published_message_id"])
-        if has_real_snapshot(fid):
-            skipped_existing += 1
-            continue
         if msg_id not in views_map:
             missing += 1
             print(f"  MISSING msg {msg_id} (feed_item {fid}) — not in preview")
@@ -114,6 +115,14 @@ async def main() -> int:
         print(f"  msg {msg_id} (feed_item {fid}): views={views} subs={subs} @ {measured_at:%Y-%m-%d}")
 
         if not args.dry_run:
+            # Self-correcting: replace this post's horizon snapshot rather than
+            # skip-if-exists, so a re-run fixes earlier bad values. The exact
+            # measured_at = posted_at + 48h is unique to the backfill; the live
+            # 4h collector writes measured_at = now(), so its rows are untouched.
+            execute(
+                "DELETE FROM engagement_metrics WHERE feed_item_id = %s AND measured_at = %s",
+                (fid, measured_at),
+            )
             execute(
                 """
                 INSERT INTO engagement_metrics
@@ -123,12 +132,11 @@ async def main() -> int:
                 """,
                 (fid, measured_at, views, subs),
             )
-        inserted += 1
+        written += 1
 
-    verb = "would insert" if args.dry_run else "inserted"
-    print(f"\nDone: {verb} {inserted}, skipped {skipped_existing} (already real), "
-          f"missing {missing}.")
-    if not args.dry_run and inserted:
+    verb = "would write" if args.dry_run else "wrote"
+    print(f"\nDone: {verb} {written} horizon snapshots, missing {missing}.")
+    if not args.dry_run and written:
         print("Next bandit cron will fold the recovered history into the posteriors.")
     return 0
 
