@@ -1219,16 +1219,11 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 log.warning("cta_rejected_by_gate", variant=candidate_variant,
                             hits=cta_check.get("hits"))
 
-    # Tracked inline source button (issue #33): opt-in via policy.telegram.
-    source_button_url = None
-    if (pipeline_env == "prod" and digest_materials is None
-            and (policy.get("telegram") or {}).get("source_button")):
-        if get_settings().tracking_base_url and candidate.get("url"):
-            try:
-                from aibp.tracking.redirect_service import register_link, short_url
-                source_button_url = short_url(register_link(candidate["id"], candidate["url"]))
-            except Exception as e:
-                log.warning("source_button_link_failed", candidate_id=candidate["id"], error=str(e))
+    # Note: the inline "source button" reply_markup (issue #33) was removed in
+    # issue #51 — a channel post's inline_keyboard suppresses the native
+    # "Comment" button. Click tracking of the source is unaffected: the in-text
+    # "Источник" link is wrapped into a tracked redirect by wrap_tracked_links
+    # below, feeding link_clicks identically to the former button.
 
     summary = parse_summary(candidate.get("summary"))
     summary_patch = {
@@ -1241,7 +1236,6 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
         "cta_variant": cta_variant,
         "offer_slug": offer_slug,
         "poll": poll,
-        "source_button_url": source_button_url,
         "generated_at": datetime.now(UTC).isoformat(),
     }
 

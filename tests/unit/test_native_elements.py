@@ -1,4 +1,4 @@
-"""Tests for native Telegram elements: source button + evening poll (issue #33)."""
+"""Tests for native Telegram elements: evening poll (issue #33)."""
 import asyncio
 import sys
 from pathlib import Path
@@ -48,32 +48,24 @@ def test_build_evening_poll_shape():
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Publisher: source button markup + extras parsing
+# Publisher: poll extras parsing
 # ═══════════════════════════════════════════════════════════════════
 
-def test_source_button_markup_shape():
-    markup = publisher.source_button_markup("https://track/r/ab12cd34")
-    button = markup["inline_keyboard"][0][0]
-    assert button["url"] == "https://track/r/ab12cd34"
-    assert "источник" in button["text"].lower()
 
-
-def test_post_extras_reads_summary():
-    item = {"summary": {"source_button_url": "https://track/r/x",
-                        "poll": {"question": "Q?", "options": ["a", "b"]}}}
-    markup, poll = publisher._post_extras(item)
-    assert markup["inline_keyboard"][0][0]["url"] == "https://track/r/x"
+def test_post_extras_reads_poll():
+    item = {"summary": {"poll": {"question": "Q?", "options": ["a", "b"]}}}
+    poll = publisher._post_extras(item)
     assert poll["question"] == "Q?"
 
 
 def test_post_extras_absent_returns_none():
-    markup, poll = publisher._post_extras({"summary": {}})
-    assert markup is None and poll is None
+    assert publisher._post_extras({"summary": {}}) is None
 
 
 def test_reply_markup_flows_into_send_path():
+    # reply_markup is still a valid send path (used by the approval gate).
     item = {"id": 1, "need_image": False, "image_url": None}
-    markup = publisher.source_button_markup("https://track/r/x")
+    markup = {"inline_keyboard": [[{"text": "ok", "callback_data": "1"}]]}
     with patch.object(publisher, "send_message", new=AsyncMock(return_value=OK)) as sm:
         _run(publisher._publish_post_message("T", "chat", item, "text", reply_markup=markup))
     assert sm.await_args.kwargs["reply_markup"] == markup

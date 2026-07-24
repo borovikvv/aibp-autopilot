@@ -105,11 +105,6 @@ async def send_poll(
         return resp.json()
 
 
-def source_button_markup(tracked_url: str) -> dict:
-    """Inline keyboard with a tracked 'open source' button (issue #33)."""
-    return {"inline_keyboard": [[{"text": "Открыть источник →", "url": tracked_url}]]}
-
-
 def get_channel_id(target_channel: str) -> str:
     """Map target_channel name to Telegram chat ID from settings."""
     s = get_settings()
@@ -153,15 +148,15 @@ async def _publish_post_message(bot_token: str, chat_id: str, item: dict, post_t
                               reply_markup=reply_markup)
 
 
-def _post_extras(item: dict) -> tuple[dict | None, dict | None]:
-    """Native elements from summary (issue #33): (source-button markup, poll)."""
+def _post_extras(item: dict) -> dict | None:
+    """Native poll from summary, if any (issue #33).
+
+    The inline "source button" reply_markup was removed in issue #51 — it
+    suppressed the native channel "Comment" button. Click tracking is retained
+    via the in-text source link wrapped by wrap_tracked_links in the pipeline.
+    """
     summary = parse_summary(item.get("summary"))
-    reply_markup = None
-    button_url = summary.get("source_button_url")
-    if button_url:
-        reply_markup = source_button_markup(button_url)
-    poll = summary.get("poll") if isinstance(summary.get("poll"), dict) else None
-    return reply_markup, poll
+    return summary.get("poll") if isinstance(summary.get("poll"), dict) else None
 
 
 async def publish_one(item: dict) -> bool:
@@ -176,11 +171,10 @@ async def publish_one(item: dict) -> bool:
 
     log.info("publishing", item_id=item["id"], channel=item["target_channel"], chat_id=chat_id)
 
-    reply_markup, poll = _post_extras(item)
+    poll = _post_extras(item)
 
     try:
-        result = await _publish_post_message(s.telegram_bot_token, chat_id, item, post_text,
-                                             reply_markup=reply_markup)
+        result = await _publish_post_message(s.telegram_bot_token, chat_id, item, post_text)
     except Exception as e:
         log.error("telegram_api_error", item_id=item["id"], error=str(e))
         execute(

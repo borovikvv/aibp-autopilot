@@ -70,7 +70,6 @@ cp .env.example .env
 In `config/policy.yaml`, confirm the safe starting posture:
 - `autopilot_paused: true`
 - `visual_policy.enabled: false`, `visual_policy.generate: false`
-- `telegram.source_button: false`
 
 ---
 
@@ -158,7 +157,9 @@ not cron — see [`deploy/README.md`](../deploy/README.md).
 Only after the relevant infra is actually live:
 - **Tracking/CTR:** set `TRACKING_BASE_URL`, deploy the redirect systemd service,
   verify `/healthz`. Clicks then flow to `link_clicks`; CTR shows on the dashboard.
-- **Source button:** `telegram.source_button: true` (needs tracking).
+  (Source clicks are tracked via the in-text "Источник" link wrapped by
+  `wrap_tracked_links`; the inline source button was removed in issue #51 — it
+  suppressed the native channel "Comment" button.)
 - **Images:** ensure `IMAGE_OUTPUT_DIR` is web-served at `IMAGE_PUBLIC_BASE_URL`,
   then `visual_policy.enabled: true` + `generate: true`. Watch the OpenRouter budget.
 
