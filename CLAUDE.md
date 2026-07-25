@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Agent OS — контракт
-Прочитай и выполняй агентский контракт (`contract_version: 1.4`): локально `~/my-wiki/topics/agent-contract.md`, удалённо `https://wiki.borovikvv.ru/topics/agent-contract`. Контекст проекта — в wiki: `projects/ai-business-pulse/`; значимые результаты сессии сохраняй по контракту в `raw/new/`.
+Прочитай и выполняй агентский контракт (`contract_version: 1.5`): локально `~/my-wiki/topics/agent-contract.md`, удалённо `https://wiki.borovikvv.ru/topics/agent-contract`. Контекст проекта — в wiki: `projects/ai-business-pulse/`; значимые результаты сессии сохраняй по контракту в `raw/new/`.
 
 ## Принципы работы с кодом
 4 принципа Карпаты (контракт §4, детали — `topics/karpathy-principles`): думай перед кодом, минимум кода, хирургические правки, верифицируй результат.
@@ -91,6 +91,7 @@ python3 -m aibp.db.migrate --rollback NNNN   # roll back one
 
 ## Gotchas
 
+- **Никаких `reply_markup` на постах канала (ADR-0009).** Инлайн-кнопки Telegram и нативные комментарии к посту взаимно исключают друг друга: как только у поста появляется `reply_markup`, обсуждение под ним пропадает. Именно так сломался трекинг кликов — его пришлось экстренно переводить на текстовые ссылки. Для любой ссылки в посте (offers, CPA, атрибуция) используй текстовый redirect-URL из `tracking/`. Параметр `reply_markup` в `publishing/publisher.py` остаётся — но только для СЛУЖЕБНЫХ сообщений (approval gate), где комментарии не нужны. На публичный пост канала он не вешается никогда. Если кажется, что кнопка всё-таки нужна, — это решение уровня владельца через Issue, а не правка в коде публикации.
 - **Stale SQLite references.** Self-learning state was consolidated from a standalone SQLite DB into the main PostgreSQL store (migration 0009, issue #43). Some docstrings (e.g. in `interleave.py`, `utils/config.py`) still say "SQLite" — **the canonical store is PostgreSQL everywhere.** Don't reintroduce SQLite.
 - **`/usr/bin/python3` in cron wrappers.** On the VPS, bare `python3` resolves into the Hermes venv where the `aibp` package isn't installed. Cron wrappers must use `/usr/bin/python3` (see `AGENTS.md`).
 - DB helpers commit on success and roll back on exception automatically — don't add manual commit/rollback around `db_conn()`.
