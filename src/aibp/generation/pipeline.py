@@ -1325,7 +1325,10 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
                 %s, NULL, %s, NULL, %s, %s, %s,
                 %s, 'approved', %s, %s,
                 %s::jsonb, %s, 'approved', %s,
-                true, 'weekly_digest_post', 'weekly_digest', false, NULL,
+                -- is_used stays false: v_publisher_queue requires it, and the
+                -- publisher flips it to true after sending. Marking the digest
+                -- row used at insert time made it unpublishable (2026-07-26).
+                false, 'weekly_digest_post', 'weekly_digest', false, NULL,
                 'prod', 'main', %s,
                 now(), now()
             )

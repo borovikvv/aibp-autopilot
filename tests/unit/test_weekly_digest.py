@@ -324,3 +324,45 @@ def test_run_digest_retries_across_rounds(monkeypatch):
 
     assert pipeline.run(slot="weekly_digest", pipeline_env="prod") == 0
     assert calls["n"] == 5
+
+
+def test_digest_insert_leaves_is_used_false(monkeypatch):
+    """The digest row must be publishable: v_publisher_queue requires
+    is_used = false (2026-07-26 — the post sat in the queue forever)."""
+    materials = [_row(i, "anti_hype", 90 - i, f"d{i}.com") for i in range(1, 5)]
+    for m, u in zip(materials, DIGEST_URLS):
+        m["url"] = u
+
+    class FakeClient:
+        default_model = "x"
+
+        def __init__(self, *a, **k):
+            pass
+
+        def chat(self, messages, temperature=0.4, max_tokens=2000):
+            return _digest_post(DIGEST_URLS)
+
+    policy = {
+        "rubric_weights": {"anti_hype": 1.0},
+        "post_params": {"weekly_digest": {
+            "target_chars": [2500, 4500], "paragraphs": [5, 8],
+            "max_bold": 2, "scheduled_hour_msk": 19}},
+        "llm_editor": {"enabled": False},
+        "visual_policy": {"slots": ["morning"]},
+        "regex_gates": [],
+    }
+    inserts = []
+
+    import aibp.self_learning.interleave as interleave
+    monkeypatch.setattr(pipeline, "OpenRouterClient", FakeClient)
+    monkeypatch.setattr(pipeline, "load_policy", lambda *a, **k: policy)
+    monkeypatch.setattr(pipeline, "select_digest_candidates", lambda *a, **k: materials)
+    monkeypatch.setattr(interleave, "resolve_policy_for_today", lambda p: p)
+    monkeypatch.setattr(pipeline, "wrap_tracked_links", lambda post, _id: post)
+    monkeypatch.setattr(pipeline, "execute", lambda sql, params=(): 1)
+    monkeypatch.setattr(pipeline, "execute_returning",
+                        lambda sql, params=(): inserts.append(sql) or {"id": 999})
+
+    assert pipeline.run(slot="weekly_digest", pipeline_env="prod") == 0
+    sql = inserts[0]
+    assert "false, 'weekly_digest_post'" in sql
