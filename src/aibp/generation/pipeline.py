@@ -1059,8 +1059,11 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     accepted = False
     for candidate_round in range(3):
         if digest_materials is not None:
-            # Fixed source set — one round only, no reject-and-swap.
-            candidate = digest_materials[0] if candidate_round == 0 else None
+            # Fixed source set — nothing to swap in, so rounds are extra tries
+            # on the same materials (each round restarts informed-retry from a
+            # clean prompt). Without this the digest got 3 attempts vs 9 for
+            # every other slot and died on a bad roll (2026-07-26).
+            candidate = digest_materials[0]
         else:
             candidate = _select_with_dedup(slot, policy, pipeline_env, exclude_ids)
         if candidate is None:
