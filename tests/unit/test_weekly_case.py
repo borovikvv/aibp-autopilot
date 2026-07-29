@@ -68,3 +68,27 @@ def test_other_slots_unaffected_by_case_day():
     d = date(2026, 7, 8)  # Wednesday
     assert pipeline._should_skip_for_weekly_case("evening", policy, d) is False
     assert pipeline._should_skip_for_weekly_case("weekly_digest", policy, d) is False
+
+
+def test_failed_weekly_case_falls_back_to_morning(monkeypatch):
+    """Wednesday's morning job already stood down, so a failed case must
+    degrade to a morning post, not an empty day (2026-07-22, -07-29)."""
+    real_run = pipeline.run
+    calls = []
+
+    def fake_run(slot="morning", pipeline_env="prod", force_slot=False):
+        calls.append((slot, force_slot))
+        return 42
+
+    monkeypatch.setattr(pipeline, "run", fake_run)          # inner recursive call
+    monkeypatch.setattr(pipeline, "load_policy", lambda *a, **k: {"post_params": {}})
+    monkeypatch.setattr(pipeline, "OpenRouterClient", lambda *a, **k: object())
+    monkeypatch.setattr(pipeline, "_should_skip_for_weekly_case", lambda *a, **k: False)
+    monkeypatch.setattr(pipeline, "_select_with_dedup",
+                        lambda *a, **k: {"id": 7, "url": "https://x/a", "title": "T"})
+    monkeypatch.setattr(pipeline, "generate_post", lambda *a, **k: None)  # LLM keeps failing
+
+    rc = real_run(slot="weekly_case", pipeline_env="stage")
+
+    assert calls == [("morning", True)]   # fell back, bypassing the case-day skip
+    assert rc == 42

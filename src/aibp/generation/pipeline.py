@@ -171,14 +171,15 @@ The post must follow this structure:
 1. <b>Заголовок</b> — one-line case summary.
 2. <b>Процесс.</b> What work task changed and how (the before-state).
 3. <b>Инструмент.</b> Which AI tool/approach was used and why.
-4. <b>Метрика.</b> Before/after numbers — time, cost, quality, count. At least one concrete number is REQUIRED.
+4. <b>Метрика.</b> The measurable effect — time, cost, quality, count. Use the source's own figures; with none, name what would be measured and how.
 5. <b>Граница.</b> Where this stops working / stop condition / limitation.
 End with: <a href="{{ url }}">Источник</a>
 
 ## Rules
 - Russian language, HTML format.
 - One source, one deep breakdown — NOT a news recap.
-- At least one numeric measurement (%, time, cost, count) in the body.
+- Numbers ONLY from the source excerpt. If it carries no figures, describe the
+  effect qualitatively — NEVER invent or estimate a measurement.
 - No forbidden terms: SMB, CEO, "для бизнеса".
 - No AI clichés. No generic moral endings.
 - Length: {{ target_chars_min }}-{{ target_chars_max }} chars, {{ paragraphs_min }}-{{ paragraphs_max }} paragraphs.
@@ -1007,7 +1008,8 @@ def wrap_tracked_links(post: str, feed_item_id: int) -> str:
 # Main entry point
 # ═══════════════════════════════════════════════════════════════════
 
-def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
+def run(slot: str = "morning", pipeline_env: str = "prod",
+        force_slot: bool = False) -> int:
     """Generate one post for the slot.
 
     Args:
@@ -1025,7 +1027,7 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     # Weekly case day mechanics (issue #40): on the configured weekday the
     # morning slot is replaced by weekly_case; on other days weekly_case does
     # not run. Exactly one of them fires.
-    if _should_skip_for_weekly_case(slot, policy):
+    if not force_slot and _should_skip_for_weekly_case(slot, policy):
         log.info("slot_skipped_weekly_case", slot=slot)
         return 0
 
@@ -1161,6 +1163,13 @@ def run(slot: str = "morning", pipeline_env: str = "prod") -> int:
     if not accepted:
         log.error("all_candidates_failed", slot=slot, pipeline_env=pipeline_env,
                   tried=len(exclude_ids))
+        if slot == "weekly_case":
+            # Wednesday's morning job already stood down for the case slot, so a
+            # failed case means no post at all (twice in a row: 22 & 29.07).
+            # Degrade to the regular morning pillar instead of an empty day.
+            log.warning("weekly_case_failed_falling_back_to_morning",
+                        pipeline_env=pipeline_env)
+            return run(slot="morning", pipeline_env=pipeline_env, force_slot=True)
         return 1
 
     if post is None:

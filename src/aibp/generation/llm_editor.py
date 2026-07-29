@@ -38,7 +38,7 @@ EXCERPT: {{ source_excerpt }}
 ## Review checklist — the post as a whole
 
 1. single_thread: the post develops ONE line of reasoning from the hook to the last sentence. Paragraphs follow from each other; removing any one of them should leave a visible hole. Flag: a paragraph that could be deleted without loss, a sideways jump, two competing theses.
-2. template_feel: the post must read as written by a person with a point, not as a filled form. Flag: visible section labels, paragraphs of identical shape ("statement — example — conclusion" three times in a row), mechanical transitions.
+2. template_feel: the post must read as written by a person with a point, not as a filled form. Flag: visible section labels, paragraphs of identical shape ("statement — example — conclusion" three times in a row), mechanical transitions. EXCEPTION — slot weekly_case: its labeled sections (Процесс/Инструмент/Метрика/Граница) are the mandated format of that slot, never flag them; judge only whether the prose inside them is alive.
 3. coverage: taken as a whole, the post answers: which work task changes, which tool/approach enables it, what the measurable effect is, and where the boundary of applicability lies. The answers may be woven anywhere in the text — but a missing answer is a flag.
 4. hook: the first two sentences give a specific reason to keep reading (a contrast, a tension, an unexpected number). Flag: a generic true-but-boring opening.
 5. no_leaked_meta: no editorial notes or summaries leaked into the post — nothing after the final "Источник" link, no parenthetical recaps, no instructions-speak.
