@@ -5,6 +5,7 @@ Supports: chat, chat_json, with retry and cost tracking.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,14 @@ class OpenRouterClient:
         self.default_model = default_model or s.openrouter_model
         self.daily_budget = daily_budget_usd or s.openrouter_daily_budget_usd
         self.base_url = (base_url or getattr(s, "openrouter_base_url", DEFAULT_BASE_URL)).rstrip("/")
+        # opencode zen/go now requires a stable per-conversation session id in
+        # the x-opencode-session header (400 MissingSessionID otherwise) and a
+        # client-specific User-Agent rather than a generic SDK/HTTP name.
+        # https://opencode.ai/docs/go/#where-can-i-use-it
+        self._opencode = "opencode.ai" in self.base_url
+        self._opencode_session = (
+            getattr(s, "opencode_session_id", None) or f"aibp-{uuid.uuid4().hex}"
+        )
         # Daily-rotated cost log: llm_cost_YYYYMMDD.jsonl
         self._cost_log_dir = PROJECT_ROOT / "reports"
         self._cost_log_dir.mkdir(parents=True, exist_ok=True)
@@ -94,6 +103,9 @@ class OpenRouterClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        if self._opencode:
+            headers["x-opencode-session"] = self._opencode_session
+            headers["User-Agent"] = "aibp-autopilot/1.0"
         with httpx.Client(timeout=timeout) as client:
             resp = client.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
             resp.raise_for_status()
