@@ -43,15 +43,22 @@ declare -A JOBS=(
   [dashboard]="dashboard"
 )
 
+# Failure-alert label override. weekly_digest was added by hand on 2026-07-16
+# with a short label; keep it so a regenerated wrapper matches the live one.
+declare -A LABELS=(
+  [gen_weekly_digest]="weekly_digest"
+)
+
 for key in "${!JOBS[@]}"; do
   cmd="${JOBS[$key]}"
+  label="${LABELS[$key]:-$cmd}"
   cat > "$SCRIPTS_DIR/aibp_${key}.sh" << EOF
 #!/bin/bash
 cd $REPO
 out=\$($PYTHON -m aibp.cli ${cmd} 2>&1)
 rc=\$?
 { echo "[\$(date -Is)] ${cmd} rc=\$rc"; echo "\$out"; } >> $REPO/reports/logs/cron.log
-if [ \$rc -ne 0 ]; then echo "AIBP ${cmd} FAILED rc=\$rc"; echo "\$out" | tail -20; fi
+if [ \$rc -ne 0 ]; then echo "AIBP ${label} FAILED rc=\$rc"; echo "\$out" | tail -20; fi
 EOF
 done
 
