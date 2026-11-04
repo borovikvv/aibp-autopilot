@@ -53,3 +53,37 @@ Regardless of A or B, register the health-check cron so an outage pages you:
 
 It curls `/healthz`, and after 3 failures in a row sends a Telegram alert to
 `TELEGRAM_ALERT_CHAT_ID` (a single blip does not page; a real outage does).
+
+## Public route (Caddy)
+
+The VPS uses **Caddy**, not nginx. The production site block is versioned as
+[`caddy/Caddyfile.example`](caddy/Caddyfile.example):
+
+- `/r/*` → `reverse_proxy 127.0.0.1:8091` (tracked links, public);
+- `/img/*` → static generated images (public);
+- everything else → basic-auth protected dashboard.
+
+`deploy/stage8_enable_tracking.sh` edits an existing `/etc/caddy/Caddyfile`
+(idempotently) — use it on an already-provisioned host. On a fresh host, merge
+the template into the Caddyfile, then `caddy validate` + `systemctl reload caddy`.
+Never commit the real bcrypt hash; generate one locally with
+`caddy hash-password`.
+
+## Cron jobs (Hermes, `--no-agent`)
+
+All 19 recurring jobs are Hermes cron jobs that run bash wrappers — no LLM is
+invoked. Both halves live in [`cron/`](cron/):
+
+```bash
+bash deploy/cron/gen_aibp_jobs.sh      # → ~/.hermes/scripts/aibp_*.sh
+bash deploy/cron/register_jobs.sh      # → hermes cron create × 19
+```
+
+`register_jobs.sh` is idempotent and encodes the production state: 11 active +
+8 paused (stage generations and self-learning). Schedules are **MSK** (server
+timezone). Wrappers must call `/usr/bin/python3`: a bare `python3` may resolve
+to the Hermes venv, which lacks the `aibp` package.
+
+For a host without Hermes, see the plain crontab block in
+[`../docs/install.md`](../docs/install.md#шаг-8-регистрация-cron-джоб).
+

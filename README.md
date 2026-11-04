@@ -60,7 +60,7 @@ python3 scripts/bootstrap.py --skip-postgres
 │ RSS Collector   │→ │ Enrichment       │→ │ Generation        │
 │ (feedparser)    │  │ (OpenRouter LLM) │  │ (LLM + quality    │
 │ cron hourly     │  │ cron every 2h    │  │  gate + image)    │
-└─────────────────┘  └──────────────────┘  │ cron 10:00/18:00  │
+└─────────────────┘  └──────────────────┘  │ cron 09:00/17:00  │
                                            └────────┬───────────┘
                                                     │
                                            ┌────────▼───────────┐

@@ -26,9 +26,9 @@ cron-джобы, логи, мелкие починки. Контент дела�
 - **Этап:** ПРОД (cutover 2026-07-14) — ЭТА система единственный издатель
   @AI_Business_Pulse. Старая (n8n + Hermes cloud) выключена и осталась
   только как аварийный резерв.
-- Активны 10 джоб: collect/enrich/publish/engagement/dashboard +
+- Активны 11 джоб: collect/enrich/publish/engagement/dashboard +
   прод-генерации (Morning/Weekly Case/Evening/Weekly Digest, дайджест —
-  Вс 18:00, публикация 19:00) + Safety Check.
+  Вс 18:00, публикация 19:00) + Safety Check + Redirect Health Check.
   Stage-генерации ВЫКЛЮЧЕНЫ с 2026-07-16 (экономия LLM; тест-канал
   включается точечно для QA рискованных изменений и вернётся на этапе 9
   для shadow-экспериментов). Также на паузе: miner, policy updater, shadow
@@ -42,7 +42,7 @@ cron-джобы, логи, мелкие починки. Контент дела�
   Этап 9 по календарю не наступает.
 - **Монетизация (этап 8, с 2026-07-20):** трекинг кликов включён —
   redirect-сервис как systemd-юнит `aibp-redirect` (порт 8091, публично
-  `https://aibp.borovikvv.ru/r/...` через nginx), Redirect Health Check
+  `https://aibp.borovikvv.ru/r/...` через Caddy), Redirect Health Check
   крон активен. Текстовая ссылка «Источник» оборачивается в трекаемый
   redirect (`wrap_tracked_links`); инлайн-кнопки источника больше нет
   (issue #51 — она подавляла нативные комментарии канала). Каталог
@@ -75,8 +75,9 @@ cron-джобы, логи, мелкие починки. Контент дела�
 
 ## Cron-джобы
 
-- Все 18 джоб — Hermes cron в режиме `--no-agent`: bash-обёртки в
-  `~/.hermes/scripts/aibp_*.sh`, LLM не вызывается.
+- Все 19 джоб — Hermes cron в режиме `--no-agent`: bash-обёртки в
+  `~/.hermes/scripts/aibp_*.sh`, LLM не вызывается. Генератор обёрток и
+  регистрация джоб лежат в репозитории: `deploy/cron/`.
 - **В обёртках только `/usr/bin/python3`** — просто `python3` резолвится в
   venv Hermes, где нет пакета `aibp` (ModuleNotFoundError).
 - Смотреть: `hermes cron list --all`. Пауза/запуск: `hermes cron pause <id>`,

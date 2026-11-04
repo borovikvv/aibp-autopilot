@@ -48,35 +48,41 @@ make migrate-status
 ```
 Migration                           Status
 -----------------------------------
-0001_initial                        ✅ applied
-0002_source_fetched_at              ✅ applied
-0003_add_reactions_table            ⏳ pending
+0009_self_learning_tables           ✅ applied
+0010_competitor_posts               ✅ applied
 ```
 
 ### 2. Hermes cron-джобы — ВРУЧНУЮ (когда меняется расписание)
 
-Если ты изменил расписание cron-джоб или добавил новую — Hermes не узнает об этом автоматически.
+Если изменил расписание cron-джоб или добавил новую — Hermes не узнает об этом
+автоматически. Источник истины: `deploy/cron/register_jobs.sh`.
 
 ```bash
-# Проверить есть ли изменения в cron-промптах
-git log --oneline HEAD~5..HEAD -- prompts/
-
-# Если есть — попроси Hermes перерегистрировать:
-# "Hermes, перечитай /root/aibp-autopilot/prompts/hermes_bootstrap.md 
-#  и обнови cron-джобы AIBP"
+cd /root/aibp-autopilot
+bash deploy/cron/gen_aibp_jobs.sh   # если менялись обёртки/команды
+bash deploy/cron/register_jobs.sh   # создаст только отсутствующие джобы
+hermes cron list --all              # 19 джоб: 11 active, 8 paused
 ```
+
+Уже существующие джобы скрипт пропускает — расписание существующей джобы
+меняется через `hermes cron edit <id>`, а не повторным `create`. Расписания —
+в MSK (таймзона сервера), не переводи их в UTC.
 
 Если расписание не менялось — **ничего делать не нужно**. Cron-джобы запускают Python-скрипты, а скрипты подтягивают новый код при каждом запуске.
 
-### 3. Long-running процессы — НЕ НУЖНО (пока)
+### 3. Long-running процессы — только `aibp-redirect`
 
-Сейчас все джобы — это cron-задачи (запустился, отработал, завершился). При следующем запуске они подхватят новый код автоматически.
+Cron-джобы подхватывают новый код сами при следующем запуске. Единственный
+постоянный процесс — redirect-сервис (`aibp-redirect.service`). Если обновление
+меняет `src/aibp/tracking/`, перезапусти его:
 
-Если в будущем появится long-running процесс (например, webhook-сервер или bot-poller) — его нужно будет перезапускать:
 ```bash
-# Будущее (когда появится systemd-сервис):
-sudo systemctl restart aibp-publisher
+sudo systemctl restart aibp-redirect
+systemctl is-active aibp-redirect
+curl -fsS http://localhost:8091/healthz   # → ok
 ```
+
+Если tracking-код не менялся — перезапуск не нужен.
 
 ## Как добавить новую миграцию
 
@@ -200,17 +206,17 @@ make update
 
 ```bash
 # Локально:
-nano prompts/hermes_bootstrap.md  # изменил schedule='0 6 * * *' на '0 5 * * *'
+nano deploy/cron/register_jobs.sh   # schedule='0 9 * * *' → '0 8 * * *'
 git commit -am "chore: move morning generation to 08:00 MSK"
 git push
 
 # На сервере:
 make update
 
-# ВАЖНО: Hermes cron-джоба НЕ обновится автоматически!
-# Попроси Hermes:
-# "Hermes, обнови cron-джобу 'AIBP — Morning Generation' 
-#  с schedule='0 5 * * *' (новое время)"
+# ВАЖНО: существующая Hermes-джоба НЕ обновится автоматически!
+# register_jobs.sh пропускает уже созданные джобы, поэтому:
+hermes cron list --all             # найти id нужной джобы
+hermes cron edit <id> --schedule '0 8 * * *'
 ```
 
 ## Откат изменений
@@ -245,9 +251,8 @@ make update
 ### На этапе git pull (конфликт)
 
 ```bash
-# Если есть локальные изменения, которые конфликтуют:
 git status
-git stash drop  # удалить stash если он создался
+git stash list          # посмотреть, что сохранилось
 # Разрешить конфликт вручную, затем:
 git add .
 git commit

@@ -35,9 +35,13 @@ paused, monetization off; prove each layer on real data before trusting it.
 ```bash
 sudo apt-get update && sudo apt-get install -y \
     python3 python3-venv python3-pip git postgresql postgresql-contrib \
-    build-essential libpq-dev curl postgresql-16-pgvector
+    build-essential libpq-dev curl postgresql-16-pgvector caddy
 sudo timedatectl set-timezone Europe/Moscow   # cron times in install.md are MSK-derived
 ```
+
+`caddy` is the public reverse proxy: it serves the dashboard, `/img/*` and the
+click-tracking route `/r/*` (see [`deploy/caddy/Caddyfile.example`](../deploy/caddy/Caddyfile.example)).
+nginx is **not** used.
 
 `postgresql-16-pgvector` provides the `vector` extension type required by
 migration 0010 (`competitor_posts` table — dedup-by-embeddings, issue #40). Match
@@ -131,9 +135,11 @@ to fix small integration issues here — this is their first live run.
 ## Phase 6 — Schedule the jobs (still test channel or paused prod)
 
 The recurring jobs are **not** run by docker-compose — use system crontab.
-Copy the 16-job block from [`install.md`](install.md#шаг-8-регистрация-cron-джоб)
-(collect-rss, enrich, generate morning/evening, publish, collect-engagement,
-mine-patterns, safety-check, dashboard, + approvals, + redirect health check).
+Copy the 19-job block from [`install.md`](install.md#шаг-8-регистрация-cron-джоб)
+(11 активных: collect-rss, enrich, generate morning/weekly_case/evening/weekly_digest,
+publish, collect-engagement, safety-check, dashboard, redirect health check;
+8 на паузе: stage-генерации, miner, policy updater, shadow runner, decision engine,
+rollback check, approval gate).
 Note the getUpdates coordination section in install.md.
 
 Redirect service (only if monetization will be enabled) is a systemd daemon,

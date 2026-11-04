@@ -44,3 +44,6 @@ inserted_digest_id.txt
 
 # ZCode local tooling state
 .zcode/
+
+# Local database dumps
+backups/

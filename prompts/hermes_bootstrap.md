@@ -105,229 +105,27 @@ Check the test channel — there should be a new post. If yes, deployment is suc
 
 ### Step 5: Register Hermes cron jobs
 
-Register these 17 cron jobs in Hermes. Run each `cronjob(action='create', ...)` call:
+Register all 19 cron jobs in Hermes in `--no-agent` mode (the LLM is never
+called — each job runs a small bash wrapper and delivers its stdout). Wrappers
+and registration live in the repo:
 
-```python
-# RSS Collector — every hour
-cronjob(
-    action='create',
-    name='AIBP — RSS Collector',
-    schedule='0 * * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli collect-rss 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
+```bash
+cd /root/aibp-autopilot
+bash deploy/cron/gen_aibp_jobs.sh      # writes ~/.hermes/scripts/aibp_*.sh
+bash deploy/cron/register_jobs.sh      # hermes cron create for all 19 jobs
+```
 
-# Enrichment — every 2 hours
-cronjob(
-    action='create',
-    name='AIBP — Enrichment',
-    schedule='30 */2 * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli enrich 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
+The registration script is idempotent: it skips a job whose name already exists
+in `hermes cron list --all`. **Schedules are in MSK** (the server timezone) —
+do not convert them to UTC. 11 jobs start active; 8 start paused (stage
+generations + self-learning) and must stay paused until the layer-5 criteria in
+`AGENTS.md` are met.
 
-# Morning Generation — 09:00 MSK (06:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Morning Generation',
-    schedule='0 6 * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot morning 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
+Verify:
 
-# Weekly Case Generation — 09:00 MSK (06:00 UTC), same time as morning (issue #40).
-# Runs daily alongside Morning Generation. On the configured weekly_case weekday
-# (policy.weekly_case.weekday) _should_skip_for_weekly_case makes Morning skip
-# and weekly_case fire instead; on every other day weekly_case skips and morning
-# runs as usual — so exactly one of the two produces a post each day.
-cronjob(
-    action='create',
-    name='AIBP — Weekly Case Generation',
-    schedule='0 6 * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot weekly_case 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Evening Generation — 17:00 MSK (14:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Evening Generation',
-    schedule='0 14 * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot evening 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Weekly Digest Generation — Sundays 18:00 MSK (15:00 UTC); publisher posts at 19:00 MSK.
-# (Was missing from this bootstrap until 2026-07-16 — the old system had it.)
-cronjob(
-    action='create',
-    name='AIBP — Weekly Digest Generation',
-    schedule='0 15 * * 0',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot weekly_digest 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Stage Morning Generation (shadow test) — 09:30 MSK (06:30 UTC)
-# Generates post for TEST channel using policy.stage.yaml (if exists)
-cronjob(
-    action='create',
-    name='AIBP — Stage Morning Generation',
-    schedule='30 6 * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot morning --env stage 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Stage Evening Generation (shadow test) — 17:30 MSK (14:30 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Stage Evening Generation',
-    schedule='30 14 * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot evening --env stage 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Publisher — every 5 minutes
-cronjob(
-    action='create',
-    name='AIBP — Publisher',
-    schedule='*/5 * * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli publish 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Engagement Collector — every 4 hours
-# NOTE (ADR-0005 / issue #49): the collector reads post views from the public
-# web preview t.me/s/<username> (needs TELEGRAM_CHANNEL_USERNAME_PROD in .env);
-# it does NOT call getUpdates, so it can never 409 against the Approval Gate.
-cronjob(
-    action='create',
-    name='AIBP — Engagement Collector',
-    schedule='0 */4 * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli collect-engagement 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Pattern Miner — Sundays 22:00 MSK (19:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Pattern Miner',
-    schedule='0 19 * * 0',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli mine-patterns 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Policy Updater — Mondays 02:00 MSK (23:00 UTC Sunday)
-cronjob(
-    action='create',
-    name='AIBP — Policy Updater',
-    schedule='0 23 * * 0',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli update-policy 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Shadow Runner — daily 02:30 MSK (23:30 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Shadow Runner',
-    schedule='30 23 * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli run-shadow 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Decision Engine — daily 03:00 MSK (00:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Decision Engine',
-    schedule='0 0 * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli decide 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Rollback Check — daily 04:00 MSK (01:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Rollback Check',
-    schedule='0 1 * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli rollback-check 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Safety Check — daily 05:00 MSK (02:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Safety Check',
-    schedule='0 2 * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli safety-check 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Dashboard — daily 06:00 MSK (03:00 UTC)
-cronjob(
-    action='create',
-    name='AIBP — Dashboard',
-    schedule='0 3 * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.cli dashboard 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Approval Gate — every 5 minutes, offset by 2 min so it never starts at :00
-# together with the Engagement Collector (issue #24). Processes approve/reject
-# button taps for high-risk experiments; shares the getUpdates lock.
-cronjob(
-    action='create',
-    name='AIBP — Approval Gate',
-    schedule='2-59/5 * * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.self_learning.approvals 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
-
-# Redirect Health Check — every 5 minutes; alerts after 3 consecutive failures
-# (issue #21). Monitors the redirect DAEMON registered in Step 5.5 below.
-cronjob(
-    action='create',
-    name='AIBP — Redirect Health Check',
-    schedule='*/5 * * * *',
-    prompt='cd /root/aibp-autopilot && python3 -m aibp.tracking.healthcheck 2>&1',
-    workdir='/root/aibp-autopilot',
-    deliver='origin',
-    enabled_toolsets=['terminal'],
-)
+```bash
+hermes cron list --all
+# → 19 jobs with names starting with "AIBP —", 11 active / 8 paused
 ```
 
 ### Step 5.5: Register the redirect service (persistent daemon, NOT cron)
@@ -361,7 +159,7 @@ After all cron jobs are registered, verify by listing them:
 cronjob(action='list')
 ```
 
-You should see 13 jobs with names starting with "AIBP —".
+You should see 19 jobs with names starting with "AIBP —".
 
 ## Reporting
 

@@ -17,7 +17,7 @@ Hermes выполнит:
 3. **Установку и настройку PostgreSQL** (автоматически)
 4. Инициализацию схемы БД
 5. Smoke-тест (проверка DB, Telegram, OpenRouter)
-6. Регистрацию 15 cron-джоб
+6. Регистрацию 19 cron-джоб (11 активных + 8 на паузе в проде)
 
 Перед стартом у тебя должны быть готовы:
 - **TELEGRAM_BOT_TOKEN** (от @BotFather)
@@ -150,37 +150,63 @@ crontab -e
 ```
 
 ```cron
+# Все расписания — в таймзоне сервера (MSK). Команды запускаются от /root/aibp-autopilot.
+# /usr/bin/python3 — системный интерпретатор: голый python3 в cron может указывать
+# на venv Hermes, где нет пакета aibp.
+
+# ── Активные в проде (11) ──────────────────────────────────────────
 # RSS Collector — каждый час
-0 * * * * cd /root/aibp-autopilot && python3 -m aibp.cli collect-rss >> reports/logs/cron.log 2>&1
+0 * * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli collect-rss >> reports/logs/cron.log 2>&1
 
 # Enrichment — каждые 2 часа
-30 */2 * * * cd /root/aibp-autopilot && python3 -m aibp.cli enrich >> reports/logs/cron.log 2>&1
+30 */2 * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli enrich >> reports/logs/cron.log 2>&1
 
-# Morning Generation — 09:00 MSK (06:00 UTC)
-0 6 * * * cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot morning >> reports/logs/cron.log 2>&1
+# Morning + Weekly Case Generation — 09:00 MSK. Weekly Case сам решает по
+# policy.weekly_case.weekday, когда он выходит вместо morning.
+0 9 * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli generate --slot morning >> reports/logs/cron.log 2>&1
+0 9 * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli generate --slot weekly_case >> reports/logs/cron.log 2>&1
 
-# Evening Generation — 17:00 MSK (14:00 UTC)
-0 14 * * * cd /root/aibp-autopilot && python3 -m aibp.cli generate --slot evening >> reports/logs/cron.log 2>&1
+# Evening Generation — 17:00 MSK
+0 17 * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli generate --slot evening >> reports/logs/cron.log 2>&1
+
+# Weekly Digest Generation — воскресенье 18:00 MSK (публикация в 19:00)
+0 18 * * 0 cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli generate --slot weekly_digest >> reports/logs/cron.log 2>&1
 
 # Publisher — каждые 5 минут
-*/5 * * * * cd /root/aibp-autopilot && python3 -m aibp.cli publish >> reports/logs/cron.log 2>&1
+*/5 * * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli publish >> reports/logs/cron.log 2>&1
 
 # Engagement Collector — каждые 4 часа
-0 */4 * * * cd /root/aibp-autopilot && python3 -m aibp.cli collect-engagement >> reports/logs/cron.log 2>&1
+0 */4 * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli collect-engagement >> reports/logs/cron.log 2>&1
 
-# Pattern Miner — Sundays 22:00 MSK
-0 19 * * 0 cd /root/aibp-autopilot && python3 -m aibp.cli mine-patterns >> reports/logs/cron.log 2>&1
+# Safety Check — 05:00 MSK
+0 5 * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli safety-check >> reports/logs/cron.log 2>&1
 
-# Safety Check — daily 05:00 MSK
-0 2 * * * cd /root/aibp-autopilot && python3 -m aibp.cli safety-check >> reports/logs/cron.log 2>&1
+# Dashboard — 06:00 MSK
+0 6 * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli dashboard >> reports/logs/cron.log 2>&1
 
-# Dashboard — daily 06:00 MSK
-0 3 * * * cd /root/aibp-autopilot && python3 -m aibp.cli dashboard >> reports/logs/cron.log 2>&1
+# Redirect Health Check — каждые 5 минут (см. шаг 9)
+*/5 * * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.tracking.healthcheck >> reports/logs/cron.log 2>&1
 
-# Approval gate — обработка approve/reject кнопок, каждые 5 минут (со сдвигом на 2 мин,
-# чтобы не стартовать одновременно с engagement collector в минуту :00, см. ниже)
-2-59/5 * * * * cd /root/aibp-autopilot && python3 -m aibp.self_learning.approvals >> reports/logs/cron.log 2>&1
+# ── На паузе в проде: self-learning и stage (8) ─────────────────────
+# Stage-генерации (тест-канал, QA рискованных изменений)
+# 30 9 * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli generate --slot morning --env stage >> reports/logs/cron.log 2>&1
+# 30 17 * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli generate --slot evening --env stage >> reports/logs/cron.log 2>&1
+# Pattern Miner — воскресенье 22:00 MSK
+# 0 22 * * 0 cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli mine-patterns >> reports/logs/cron.log 2>&1
+# Policy Updater — понедельник 02:00 MSK
+# 0 2 * * 1 cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli update-policy >> reports/logs/cron.log 2>&1
+# Shadow Runner — 02:30 MSK
+# 30 2 * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli run-shadow >> reports/logs/cron.log 2>&1
+# Decision Engine — 03:00 MSK
+# 0 3 * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli decide >> reports/logs/cron.log 2>&1
+# Rollback Check — 04:00 MSK
+# 0 4 * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.cli rollback-check >> reports/logs/cron.log 2>&1
+# Approval gate — каждые 5 минут (со сдвигом на 2 мин, см. ниже)
+# 2-59/5 * * * * cd /root/aibp-autopilot && /usr/bin/python3 -m aibp.self_learning.approvals >> reports/logs/cron.log 2>&1
 ```
+
+> Полный набор и статусы «активна/на паузе» для Hermes-варианта —
+> `prompts/hermes_bootstrap.md`, обёртки и регистрация — `deploy/cron/`.
 
 ### ⚠️ Координация getUpdates (обязательно к прочтению)
 
@@ -225,11 +251,8 @@ curl -fsS http://localhost:${TRACKING_PORT:-8091}/healthz   # → ok
 cd docker && docker compose up -d redirect
 ```
 
-Плюс health-check cron (алерт после 3 сбоев подряд):
-
-```cron
-*/5 * * * * cd /root/aibp-autopilot && python3 -m aibp.tracking.healthcheck >> reports/logs/cron.log 2>&1
-```
+Health-check cron (`*/5 * * * *`, module `aibp.tracking.healthcheck`) уже входит
+в блок шага 8 — отдельно добавлять не нужно. Он шлёт алерт после 3 сбоев подряд.
 
 ---
 
