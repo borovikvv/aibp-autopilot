@@ -1,0 +1,34 @@
+# AIBP public site — Caddy template (production shape as of 2026-07-20)
+#
+# Serves:
+#   /r/*    → click-tracking redirect daemon on 127.0.0.1:8091 (public, no auth)
+#   /img/*  → generated post images under /srv/static/aibp (public, no auth)
+#   everything else → basic-auth protected static files (dashboard)
+#
+# Do NOT copy a real password hash into git. Generate a fresh one:
+#   caddy hash-password --plaintext '<password>'
+# and paste it in place of <BCRYPT_HASH> on the server only.
+#
+# Install (see deploy/stage8_enable_tracking.sh, which edits an existing file):
+#   1. merge this site block into /etc/caddy/Caddyfile
+#   2. caddy validate --config /etc/caddy/Caddyfile
+#   3. systemctl reload caddy
+
+{
+	servers {
+		protocols h1 h2
+	}
+}
+
+aibp.borovikvv.ru {
+	root * /srv/static/aibp
+	@protected {
+		not path /img/*
+		not path /r/*
+	}
+	basicauth @protected {
+		aibp <BCRYPT_HASH>
+	}
+	reverse_proxy /r/* 127.0.0.1:8091
+	file_server
+}
