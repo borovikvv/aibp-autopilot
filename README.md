@@ -125,6 +125,7 @@ aibp-autopilot/
 
 - `docs/install.md` — пошаговая установка через Hermes Agent
 - `docs/updating.md` — **как обновлять проект на сервере после коммитов в GitHub**
+- `docs/freeze_restore.md` — **заморозка и восстановление с нуля (что не в git)**
 - `docs/adr/` — Architecture Decision Records
 - `prompts/hermes_bootstrap.md` — промпт для Hermes Agent (полное разворачивание)
 

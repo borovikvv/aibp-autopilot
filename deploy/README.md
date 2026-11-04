@@ -87,3 +87,6 @@ to the Hermes venv, which lacks the `aibp` package.
 For a host without Hermes, see the plain crontab block in
 [`../docs/install.md`](../docs/install.md#шаг-8-регистрация-cron-джоб).
 
+Full freeze/restore checklist (what is not in git: `.env`, DB dump, Caddy
+hash): [`../docs/freeze_restore.md`](../docs/freeze_restore.md).
+
