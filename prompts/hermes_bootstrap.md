@@ -119,16 +119,18 @@ The registration script is idempotent: it skips a job whose name already exists
 in `hermes cron list --all`. **Schedules are in MSK** (the server timezone) —
 do not convert them to UTC.
 
-**Publishing starts paused by default**: Publisher and the four generation jobs
-are created paused, so a restore can never post to the real channel without an
-explicit decision. Default target state is 6 active / 13 paused. Once the
-test-channel run is verified and the owner approves going live, either re-run
-with `--enable-publishing` or resume the five jobs by ID:
+**The content pipeline starts paused by default**: RSS collection, enrichment,
+Publisher and the four generation jobs are created paused, so a restore can
+neither spend LLM budget nor post to the real channel without an explicit
+decision. Default target state is 4 active / 15 paused (only monitoring runs).
+Once the test-channel run is verified and the owner approves going live, either
+re-run with `--enable-publishing` or resume the seven pipeline jobs by ID:
 
 ```bash
 bash deploy/cron/register_jobs.sh --enable-publishing   # fresh install only
 # or on an existing install:
-hermes cron resume <Publisher>; hermes cron resume <generation ids>
+hermes cron resume <rss>; hermes cron resume <enrich>
+hermes cron resume <generation ids>; hermes cron resume <Publisher>  # last
 ```
 
 The 8 stage/self-learning jobs stay paused until the layer-5 criteria in

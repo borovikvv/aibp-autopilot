@@ -79,11 +79,12 @@ bash deploy/cron/gen_aibp_jobs.sh      # → ~/.hermes/scripts/aibp_*.sh
 bash deploy/cron/register_jobs.sh      # → hermes cron create × 19
 ```
 
-`register_jobs.sh` is idempotent. Publishing starts **paused** by default:
-Publisher + the four generation jobs are created paused so a fresh restore
-cannot post to the real channel without an explicit decision. Default target is
-6 active / 13 paused; pass `--enable-publishing` to start the 5 publishing jobs
-active (11 active / 8 paused). Schedules are **MSK** (server timezone).
+`register_jobs.sh` is idempotent. The content pipeline starts **paused** by
+default: RSS collection, enrichment, Publisher and the four generation jobs are
+created paused so a fresh restore neither spends LLM budget nor posts to the
+real channel without an explicit decision. Default target is 4 active / 15
+paused (monitoring only); pass `--enable-publishing` to start the 7 pipeline
+jobs active (11 active / 8 paused). Schedules are **MSK** (server timezone).
 Wrappers must call `/usr/bin/python3`: a bare `python3` may resolve to the
 Hermes venv, which lacks the `aibp` package.
 

@@ -5,15 +5,17 @@
 # Idempotent: jobs whose name is already present in `hermes cron list --all`
 # are skipped, so re-running after adding a job only creates the missing one.
 #
-# SAFETY: publishing starts PAUSED by default. Publisher and the four
-# generation jobs are created paused so a restore can never post to the real
-# channel without an explicit decision (deploy_vps.md hard gate: the first
-# real post needs human confirmation). Pass --enable-publishing to start them
-# active.
+# SAFETY: the content pipeline starts PAUSED by default. RSS collection,
+# enrichment, Publisher and the four generation jobs are created paused, so a
+# restore cannot spend LLM budget or post to the real channel without an
+# explicit decision (deploy_vps.md hard gate: the first real post needs human
+# confirmation). Monitoring jobs (engagement, dashboard, safety, redirect
+# health) stay active: they do not call the LLM and do not post.
+# Pass --enable-publishing to start the whole pipeline active.
 #
 # Usage:
 #   bash deploy/cron/gen_aibp_jobs.sh              # wrappers first
-#   bash deploy/cron/register_jobs.sh              # publishing paused (default)
+#   bash deploy/cron/register_jobs.sh              # content pipeline paused (default)
 #   bash deploy/cron/register_jobs.sh --enable-publishing
 #   bash deploy/cron/register_jobs.sh --dry-run    # show what would be created
 set -euo pipefail
@@ -31,10 +33,10 @@ done
 
 REPO="${REPO:-/root/aibp-autopilot}"
 STAGE_REASON="paused: stage 9 / layer-5 criteria not met (see AGENTS.md)"
-PUBLISH_REASON="paused: publishing disabled by default; pass --enable-publishing"
+PUBLISH_REASON="paused: content pipeline disabled by default; pass --enable-publishing"
 
-# Jobs that can put a post into the channel.
-PUBLISHING_KEYS="publish gen_morning gen_weekly_case gen_evening gen_weekly_digest"
+# Content pipeline: collection + enrichment + everything that can publish.
+PIPELINE_KEYS="rss enrich publish gen_morning gen_weekly_case gen_evening gen_weekly_digest"
 
 # key|display name|schedule MSK|state
 JOBS=(
@@ -67,7 +69,7 @@ for row in "${JOBS[@]}"; do
   IFS='|' read -r key name schedule state <<< "$row"
   reason="$STAGE_REASON"
 
-  if [[ " $PUBLISHING_KEYS " == *" $key "* ]] && [ "$ENABLE_PUBLISHING" = false ]; then
+  if [[ " $PIPELINE_KEYS " == *" $key "* ]] && [ "$ENABLE_PUBLISHING" = false ]; then
     state="paused"
     reason="$PUBLISH_REASON"
   fi

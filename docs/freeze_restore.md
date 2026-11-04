@@ -6,8 +6,9 @@
 
 - Ветка: `main`
 - Тег заморозки: `freeze-2026-11-04` (на него и восстанавливаться)
-- Публикации остановлены 2026-11-04: Publisher и 4 генерации на паузе;
-  активны 6 джоб (collect/enrich/engagement/dashboard/safety/redirect health)
+- Конвейер остановлен 2026-11-04: RSS Collector, Enrichment, Publisher и
+  4 генерации на паузе — LLM не вызывается, бюджет не тратится. Активны
+  4 мониторинговые джобы: engagement, dashboard, safety, redirect health.
 - `config/policy.yaml`: `autopilot_paused: true`
 
 ## Что лежит в GitHub
@@ -82,13 +83,14 @@ git clone https://github.com/borovikvv/aibp-autopilot.git
    ```bash
    bash deploy/cron/gen_aibp_jobs.sh
    bash deploy/cron/register_jobs.sh
-   hermes cron list --all        # 19 джоб, публикации по умолчанию на паузе
+   hermes cron list --all        # 19 джоб, конвейер по умолчанию на паузе
    ```
    `register_jobs.sh` идемпотентен и не трогает уже созданные джобы. По
-   умолчанию Publisher и 4 генерации создаются **на паузе** — публикация не
-   начнётся без явного решения. Включать только после проверки в тест-канале
-   и подтверждения владельца: `bash deploy/cron/register_jobs.sh
-   --enable-publishing` (или `hermes cron resume <id>` для каждой из 5 джоб).
+   умолчанию RSS, Enrichment, Publisher и 4 генерации создаются **на паузе**
+   (4 active / 15 paused): ни LLM-расхода, ни публикаций без явного решения.
+   Включать только после проверки в тест-канале и подтверждения владельца:
+   `bash deploy/cron/register_jobs.sh --enable-publishing` (или
+   `hermes cron resume <id>` для каждой из 7 джоб, Publisher — последним).
 
 9. **Проверка**:
    ```bash
@@ -98,12 +100,14 @@ git clone https://github.com/borovikvv/aibp-autopilot.git
    Затем — пробный прогон генерации в тестовый канал, только после этого
    возвращать прод-публикацию.
 
-## Публикации остановлены (2026-11-04, выполнено)
+## Конвейер остановлен (2026-11-04, выполнено)
 
-По команде владельца поставлены на паузу 5 джоб:
+По команде владельца поставлены на паузу 7 джоб:
 
 | Джоба | ID |
 |---|---|
+| RSS Collector | `ca53fc96e9a7` |
+| Enrichment | `95af1e9490f0` |
 | Publisher | `0c7817557025` |
 | Morning Generation | `2323fc7092af` |
 | Weekly Case Generation | `35729056c16d` |
@@ -111,14 +115,21 @@ git clone https://github.com/borovikvv/aibp-autopilot.git
 | Weekly Digest Generation | `276fbf2ff28c` |
 
 Очередь публикации на момент остановки пуста (`v_publisher_queue` = 0).
-Активны 6 джоб: RSS Collector, Enrichment, Engagement Collector, Dashboard,
-Safety Check, Redirect Health Check. ID джоб после восстановления будут
-другими — искать по имени через `hermes cron list --all`.
+Активны 4 джоба: Engagement Collector, Dashboard, Safety Check,
+Redirect Health Check — они не вызывают LLM и не создают постов. ID джоб
+после восстановления будут другими — искать по имени через
+`hermes cron list --all`.
 
-Возобновление — только по команде владельца:
+Возобновление — только по команде владельца, в таком порядке:
 
 ```bash
-hermes cron resume 0c7817557025   # Publisher — последним, после генераций
+hermes cron resume ca53fc96e9a7   # RSS Collector
+hermes cron resume 95af1e9490f0   # Enrichment
+hermes cron resume 2323fc7092af   # Morning Generation
+hermes cron resume 35729056c16d   # Weekly Case Generation
+hermes cron resume 88c8f63eb1eb   # Evening Generation
+hermes cron resume 276fbf2ff28c   # Weekly Digest Generation
+hermes cron resume 0c7817557025   # Publisher — последним
 ```
 
 `aibp-redirect` не останавливать: без него перестают работать уже

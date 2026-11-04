@@ -61,12 +61,13 @@ Migration                           Status
 cd /root/aibp-autopilot
 bash deploy/cron/gen_aibp_jobs.sh   # если менялись обёртки/команды
 bash deploy/cron/register_jobs.sh   # создаст только отсутствующие джобы
-hermes cron list --all              # 19 джоб; публикации по умолчанию paused
+hermes cron list --all              # 19 джоб; конвейер по умолчанию paused
 ```
 
-По умолчанию `register_jobs.sh` создаёт Publisher и 4 генерации **на паузе**
-(защита от публикации без подтверждения). Включать их — только осознанно,
-флагом `--enable-publishing` или `hermes cron resume <id>`.
+По умолчанию `register_jobs.sh` создаёт весь конвейер — RSS, Enrichment,
+Publisher и 4 генерации — **на паузе** (4 active / 15 paused): защита от
+LLM-расхода и публикации без подтверждения. Включать осознанно, флагом
+`--enable-publishing` или `hermes cron resume <id>`.
 
 Уже существующие джобы скрипт пропускает — расписание существующей джобы
 меняется через `hermes cron edit <id>`, а не повторным `create`. Расписания —
