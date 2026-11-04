@@ -5,18 +5,36 @@
 # Idempotent: jobs whose name is already present in `hermes cron list --all`
 # are skipped, so re-running after adding a job only creates the missing one.
 #
+# SAFETY: publishing starts PAUSED by default. Publisher and the four
+# generation jobs are created paused so a restore can never post to the real
+# channel without an explicit decision (deploy_vps.md hard gate: the first
+# real post needs human confirmation). Pass --enable-publishing to start them
+# active.
+#
 # Usage:
-#   bash deploy/cron/gen_aibp_jobs.sh     # wrappers first
-#   bash deploy/cron/register_jobs.sh
-#   bash deploy/cron/register_jobs.sh --dry-run   # show what would be created
+#   bash deploy/cron/gen_aibp_jobs.sh              # wrappers first
+#   bash deploy/cron/register_jobs.sh              # publishing paused (default)
+#   bash deploy/cron/register_jobs.sh --enable-publishing
+#   bash deploy/cron/register_jobs.sh --dry-run    # show what would be created
 set -euo pipefail
 
 DRY_RUN=false
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=true
+ENABLE_PUBLISHING=false
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=true ;;
+    --enable-publishing) ENABLE_PUBLISHING=true ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
 
 REPO="${REPO:-/root/aibp-autopilot}"
-ACTIVE_REASON="production"
-PAUSED_REASON="paused: stage 9 / layer-5 criteria not met (see AGENTS.md)"
+STAGE_REASON="paused: stage 9 / layer-5 criteria not met (see AGENTS.md)"
+PUBLISH_REASON="paused: publishing disabled by default; pass --enable-publishing"
+
+# Jobs that can put a post into the channel.
+PUBLISHING_KEYS="publish gen_morning gen_weekly_case gen_evening gen_weekly_digest"
 
 # key|display name|schedule MSK|state
 JOBS=(
@@ -42,19 +60,33 @@ JOBS=(
 )
 
 existing="$(hermes cron list --all 2>&1 || true)"
+active_count=0
+paused_count=0
 
 for row in "${JOBS[@]}"; do
   IFS='|' read -r key name schedule state <<< "$row"
+  reason="$STAGE_REASON"
+
+  if [[ " $PUBLISHING_KEYS " == *" $key "* ]] && [ "$ENABLE_PUBLISHING" = false ]; then
+    state="paused"
+    reason="$PUBLISH_REASON"
+  fi
+
+  if [ "$state" = "active" ]; then
+    active_count=$((active_count + 1))
+  else
+    paused_count=$((paused_count + 1))
+  fi
 
   if grep -qF "$name" <<< "$existing"; then
-    echo "skip   $name (already registered)"
+    echo "skip   $name (already registered, left as is)"
     continue
   fi
 
   args=(create "$schedule" --name "$name" --script "aibp_${key}.sh" \
         --no-agent --deliver local --workdir "$REPO")
   if [ "$state" = "paused" ]; then
-    args+=(--paused --paused-reason "$PAUSED_REASON")
+    args+=(--paused --paused-reason "$reason")
   fi
 
   if [ "$DRY_RUN" = true ]; then
@@ -66,12 +98,13 @@ for row in "${JOBS[@]}"; do
   echo "create $name [$state] ($schedule)"
 done
 
+echo
+echo "target state: $active_count active, $paused_count paused"
+
 if [ "$DRY_RUN" = true ]; then
-  echo
   echo "dry-run: nothing was registered"
   exit 0
 fi
 
-echo
 hermes cron list --all | grep -c '^  [a-f0-9]\{12\} \[' || true
-echo "jobs total (expected 19, 11 active)"
+echo "jobs total (expected 19)"

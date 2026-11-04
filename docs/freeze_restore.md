@@ -6,7 +6,8 @@
 
 - Ветка: `main`
 - Тег заморозки: `freeze-2026-11-04` (на него и восстанавливаться)
-- 19 cron-джоб: 11 активных, 8 на паузе
+- Публикации остановлены 2026-11-04: Publisher и 4 генерации на паузе;
+  активны 6 джоб (collect/enrich/engagement/dashboard/safety/redirect health)
 - `config/policy.yaml`: `autopilot_paused: true`
 
 ## Что лежит в GitHub
@@ -81,9 +82,13 @@ git clone https://github.com/borovikvv/aibp-autopilot.git
    ```bash
    bash deploy/cron/gen_aibp_jobs.sh
    bash deploy/cron/register_jobs.sh
-   hermes cron list --all        # 19 джоб: 11 active, 8 paused
+   hermes cron list --all        # 19 джоб, публикации по умолчанию на паузе
    ```
-   `register_jobs.sh` идемпотентен и не трогает уже созданные джобы.
+   `register_jobs.sh` идемпотентен и не трогает уже созданные джобы. По
+   умолчанию Publisher и 4 генерации создаются **на паузе** — публикация не
+   начнётся без явного решения. Включать только после проверки в тест-канале
+   и подтверждения владельца: `bash deploy/cron/register_jobs.sh
+   --enable-publishing` (или `hermes cron resume <id>` для каждой из 5 джоб).
 
 9. **Проверка**:
    ```bash
@@ -93,18 +98,31 @@ git clone https://github.com/borovikvv/aibp-autopilot.git
    Затем — пробный прогон генерации в тестовый канал, только после этого
    возвращать прод-публикацию.
 
-## Если нужно остановить публикации (операционная заморозка)
+## Публикации остановлены (2026-11-04, выполнено)
 
-Решение владельца; без команды владельца джобы не трогать.
+По команде владельца поставлены на паузу 5 джоб:
+
+| Джоба | ID |
+|---|---|
+| Publisher | `0c7817557025` |
+| Morning Generation | `2323fc7092af` |
+| Weekly Case Generation | `35729056c16d` |
+| Evening Generation | `88c8f63eb1eb` |
+| Weekly Digest Generation | `276fbf2ff28c` |
+
+Очередь публикации на момент остановки пуста (`v_publisher_queue` = 0).
+Активны 6 джоб: RSS Collector, Enrichment, Engagement Collector, Dashboard,
+Safety Check, Redirect Health Check. ID джоб после восстановления будут
+другими — искать по имени через `hermes cron list --all`.
+
+Возобновление — только по команде владельца:
 
 ```bash
-hermes cron list --all                  # найти ID
-hermes cron pause <Publisher>
-hermes cron pause <Morning/Weekly Case/Evening/Weekly Digest>
+hermes cron resume 0c7817557025   # Publisher — последним, после генераций
 ```
 
-`aibp-redirect` останавливать только при полном выключении: без него
-перестают работать уже опубликованные трекаемые ссылки.
+`aibp-redirect` не останавливать: без него перестают работать уже
+опубликованные трекаемые ссылки.
 
 ## Что проверено 2026-11-04
 

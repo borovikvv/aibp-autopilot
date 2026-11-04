@@ -26,9 +26,11 @@ cron-джобы, логи, мелкие починки. Контент дела�
 - **Этап:** ПРОД (cutover 2026-07-14) — ЭТА система единственный издатель
   @AI_Business_Pulse. Старая (n8n + Hermes cloud) выключена и осталась
   только как аварийный резерв.
-- Активны 11 джоб: collect/enrich/publish/engagement/dashboard +
-  прод-генерации (Morning/Weekly Case/Evening/Weekly Digest, дайджест —
-  Вс 18:00, публикация 19:00) + Safety Check + Redirect Health Check.
+- **Публикации остановлены 2026-11-04** по команде владельца: Publisher и
+  четыре прод-генерации (Morning/Weekly Case/Evening/Weekly Digest) на паузе.
+  Активны 6 джоб: collect/enrich/engagement/dashboard/Safety Check/
+  Redirect Health Check. Очередь публикации на момент остановки пуста.
+  Возобновление — только по команде владельца: `hermes cron resume <id>`.
   Stage-генерации ВЫКЛЮЧЕНЫ с 2026-07-16 (экономия LLM; тест-канал
   включается точечно для QA рискованных изменений и вернётся на этапе 9
   для shadow-экспериментов). Также на паузе: miner, policy updater, shadow

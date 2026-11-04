@@ -117,15 +117,28 @@ bash deploy/cron/register_jobs.sh      # hermes cron create for all 19 jobs
 
 The registration script is idempotent: it skips a job whose name already exists
 in `hermes cron list --all`. **Schedules are in MSK** (the server timezone) —
-do not convert them to UTC. 11 jobs start active; 8 start paused (stage
-generations + self-learning) and must stay paused until the layer-5 criteria in
+do not convert them to UTC.
+
+**Publishing starts paused by default**: Publisher and the four generation jobs
+are created paused, so a restore can never post to the real channel without an
+explicit decision. Default target state is 6 active / 13 paused. Once the
+test-channel run is verified and the owner approves going live, either re-run
+with `--enable-publishing` or resume the five jobs by ID:
+
+```bash
+bash deploy/cron/register_jobs.sh --enable-publishing   # fresh install only
+# or on an existing install:
+hermes cron resume <Publisher>; hermes cron resume <generation ids>
+```
+
+The 8 stage/self-learning jobs stay paused until the layer-5 criteria in
 `AGENTS.md` are met.
 
 Verify:
 
 ```bash
 hermes cron list --all
-# → 19 jobs with names starting with "AIBP —", 11 active / 8 paused
+# → 19 jobs with names starting with "AIBP —"
 ```
 
 ### Step 5.5: Register the redirect service (persistent daemon, NOT cron)
